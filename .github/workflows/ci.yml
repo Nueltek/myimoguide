@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Typecheck and bundle size
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          # AI SDK v7 is ESM-only and drops Node 20.
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # The gate that keeps the Cloudflare free plan viable. A dependency
+      # that pushes the Worker over 3 MB gzipped fails here rather than at
+      # deploy time.
+      - name: Bundle size against the free-plan ceiling
+        run: node scripts/check-bundle-size.mjs
+
+      - name: Verify migrations are committed
+        run: |
+          npx drizzle-kit generate --name ci-drift-check
+          if [ -n "$(git status --porcelain drizzle/)" ]; then
+            echo "::error::Schema changed but no migration was committed. Run 'npm run db:generate'."
+            git status --porcelain drizzle/
+            exit 1
+          fi
+        env:
+          # drizzle-kit only parses the schema for `generate`; it does not
+          # connect. A placeholder keeps it from erroring on a missing var.
+          DATABASE_URL: postgresql://ci:ci@localhost:5432/ci
+
+  secrets-hygiene:
+    name: No secrets committed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Fail on committed secrets
+        run: |
+          set -e
+          # .dev.vars holds real secrets locally and must never be tracked.
+          if git ls-files --error-unmatch .dev.vars >/dev/null 2>&1; then
+            echo "::error::.dev.vars is tracked. Remove it: git rm --cached .dev.vars"
+            exit 1
+          fi
+          # Catch tokens pasted into source or wrangler config.
+          if git grep -nE '(sk-ant-[A-Za-z0-9_-]{20,}|EAA[A-Za-z0-9]{40,}|postgresql://[^ ]*:[^ @]+@)' \
+               -- ':!*.example' ':!docs/*' ':!.github/*'; then
+            echo "::error::A credential-shaped string is committed. Move it to a Wrangler secret."
+            exit 1
+          fi
+          echo "No secrets found in tracked files."

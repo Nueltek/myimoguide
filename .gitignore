@@ -1,0 +1,8 @@
+node_modules/
+.dist/
+.wrangler/
+.dev.vars
+.env
+drizzle/meta/_journal.json.bak
+*.log
+.DS_Store
