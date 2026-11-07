@@ -60,14 +60,38 @@ All six. Set as Wrangler secrets for the deployed Worker, and in a local
 | `ANTHROPIC_API_KEY` | console.anthropic.com | load a few dollars of credit |
 | `DATABASE_URL` | Neon → Connection string | use the **pooled** string |
 
+Authenticate Wrangler first, once:
+
+```
+npx wrangler login
+```
+
+**PowerShell (Windows).** One at a time — each command prompts for its value.
+
+```powershell
+Copy-Item .dev.vars.example .dev.vars   # fill it in; it is gitignored
+
+npx wrangler secret put WHATSAPP_VERIFY_TOKEN
+npx wrangler secret put WHATSAPP_APP_SECRET
+npx wrangler secret put WHATSAPP_TOKEN
+npx wrangler secret put WHATSAPP_PHONE_ID
+npx wrangler secret put ANTHROPIC_API_KEY
+npx wrangler secret put DATABASE_URL
+```
+
+**bash / WSL / macOS.**
+
 ```bash
-cp .dev.vars.example .dev.vars    # fill it in; it is gitignored
+cp .dev.vars.example .dev.vars
 
 for s in WHATSAPP_VERIFY_TOKEN WHATSAPP_APP_SECRET WHATSAPP_TOKEN \
          WHATSAPP_PHONE_ID ANTHROPIC_API_KEY DATABASE_URL; do
   npx wrangler secret put "$s"
 done
 ```
+
+If Wrangler reports that the Worker does not exist yet, run `npx wrangler
+deploy` once to create it, then set the secrets.
 
 - [ ] All six set via `wrangler secret put`
 - [ ] `.dev.vars` filled in and **not** tracked (`git status` shows nothing)
@@ -89,6 +113,16 @@ npx wrangler r2 bucket create myimoguide-sources
 -- once, in the Neon SQL editor:
 CREATE EXTENSION IF NOT EXISTS vector;
 ```
+
+**PowerShell (Windows).**
+
+```powershell
+$env:DATABASE_URL = 'postgresql://...'
+npm run db:generate
+npm run db:migrate
+```
+
+**bash / WSL / macOS.**
 
 ```bash
 export DATABASE_URL='postgresql://...'
