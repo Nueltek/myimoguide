@@ -133,6 +133,19 @@ app.onError((err, c) => {
   if (c.req.path === '/webhook/whatsapp') return c.body(null, 200);
 
   if (c.req.path.startsWith('/admin')) {
+    // Name the cause when we can recognise it. A missing relation means a
+    // migration has not been applied, and saying so on the page beats
+    // sending someone to read logs for a one-line fix.
+    const raw = err instanceof Error ? err.message : String(err);
+    const missing = /relation "([a-z_]+)" does not exist|column "?([a-z_.]+)"? does not exist/i.exec(raw);
+    const diagnosis = missing
+      ? `<p style="background:#FFF8E6;border:1px solid #F2E3BC;border-radius:6px;padding:10px 12px;color:#9A6700">
+           <strong>The database is behind the code.</strong><br>
+           Missing: <code>${(missing[1] ?? missing[2] ?? '').replace(/[<>&]/g, '')}</code><br>
+           Run <code>npm run db:migrate</code> against this database.
+         </p>`
+      : '';
+
     return c.html(
       `<!doctype html><meta charset="utf-8">
        <title>Error</title>
@@ -144,6 +157,7 @@ app.onError((err, c) => {
        <div class="b">
          <h1 style="font-size:17px;margin:0 0 8px">Something went wrong</h1>
          <p>The dashboard could not complete that request. This is a fault on our side.</p>
+         ${diagnosis}
          <p>Reference <code>${ref}</code> — quote it when reporting this. The full cause is in the server log.</p>
          <p style="margin-bottom:0"><a href="/admin/login" style="color:#005A36">Back to sign in</a></p>
        </div>`,

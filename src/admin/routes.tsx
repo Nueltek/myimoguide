@@ -27,7 +27,10 @@ export const admin = new Hono<Ctx>();
  * default rather than by remembering to protect it.
  */
 admin.use('*', async (c, next) => {
-  c.set('db', createDb(c.env.DATABASE_URL));
+  // Use an injected connection if one is already set. This is the seam
+  // the test harness uses to run these exact routes against a real
+  // Postgres, rather than reasoning about them from the outside.
+  if (!c.get('db')) c.set('db', createDb(c.env.DATABASE_URL));
 
   const path = new URL(c.req.url).pathname;
   if (path === '/admin/login') return next();
@@ -86,29 +89,33 @@ admin.get('/', async (c) => {
   const db = c.get('db');
   const user = c.get('user');
 
-  // One batch, one round trip.
-  const [serviceStats, tierStats, recent] = await db.batch([
-    db
-      .select({
-        total: sql<number>`count(*)::int`,
-        confirmed: sql<number>`count(*) filter (where ${services.confidence} = 'confirmed')::int`,
-      })
-      .from(services),
-    db
-      .select({ tier: queries.answerTier, n: sql<number>`count(*)::int` })
-      .from(queries)
-      .groupBy(queries.answerTier),
-    db
-      .select({
-        question: queries.question,
-        tier: queries.answerTier,
-        provider: queries.provider,
-        createdAt: queries.createdAt,
-      })
-      .from(queries)
-      .orderBy(desc(queries.createdAt))
-      .limit(8),
-  ]);
+  // Sequential, not db.batch(). batch() is driver-specific — it exists on
+  // neon-http but not on every Drizzle driver, which made this page
+  // untestable against a local Postgres. The overview is opened by a
+  // handful of staff, so three round trips cost nothing worth having an
+  // untestable page for. The hot path in the agent still batches.
+  const serviceStats = await db
+    .select({
+      total: sql<number>`count(*)::int`,
+      confirmed: sql<number>`count(*) filter (where ${services.confidence} = 'confirmed')::int`,
+    })
+    .from(services);
+
+  const tierStats = await db
+    .select({ tier: queries.answerTier, n: sql<number>`count(*)::int` })
+    .from(queries)
+    .groupBy(queries.answerTier);
+
+  const recent = await db
+    .select({
+      question: queries.question,
+      tier: queries.answerTier,
+      provider: queries.provider,
+      createdAt: queries.createdAt,
+    })
+    .from(queries)
+    .orderBy(desc(queries.createdAt))
+    .limit(8);
 
   const stats = serviceStats[0] ?? { total: 0, confirmed: 0 };
   const byTier = Object.fromEntries(tierStats.map((r) => [r.tier ?? 'unknown', r.n]));
@@ -380,7 +387,7 @@ admin.get('/services/:id', async (c) => {
           </div>
 
           <div class="form-foot">
-            <button class="btn primary" type="submit">
+            <button class="btn primary" type="submit" data-busy-label="Saving...">
               <Icon name="check" /> Save changes
             </button>
             <span class="t-dim">

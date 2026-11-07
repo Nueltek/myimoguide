@@ -126,6 +126,19 @@ async function handleOne(
   }
 
   const started = Date.now();
+
+  /**
+   * Stage markers.
+   *
+   * A message that vanishes tells you nothing about where it died. If the
+   * isolate is killed — a CPU overrun leaves no catch to run — the last
+   * stage printed is the one that was running. That is the difference
+   * between knowing and guessing.
+   */
+  const stage = (name: string) =>
+    console.log(`stage: ${name} (${Date.now() - started}ms) ${job.messageId}`);
+
+  stage('history');
   const history = await convo.recent();
 
   // No "let me check that for you" message.
@@ -138,10 +151,12 @@ async function handleOne(
   //
   // The budget keeps us inside the indicator's lifetime, so a slow search
   // produces an honest reply rather than silence.
+  stage('answering');
   const result = await withBudget(
     answerQuestion({ db, env, question: job.text, history }),
     ANSWER_BUDGET_MS,
   );
+  stage(result ? `answered:${result.tier}` : 'budget-exceeded');
 
   if (!result) {
     console.warn('answer exceeded budget', { messageId: job.messageId });
@@ -160,6 +175,7 @@ async function handleOne(
   );
 
   await sendText(env, job.from, result.text);
+  stage('sent');
 
   await convo.append('user', job.text);
   await convo.append('assistant', result.text);
@@ -167,6 +183,7 @@ async function handleOne(
   // Logging every question — matched or not — is how the pilot produces the
   // gap list that becomes the pitch.
   await logQuery(db, env, job, result, Date.now() - started);
+  stage('logged');
 }
 
 /** Is this sender allowed to run diagnostic commands? */

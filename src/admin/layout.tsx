@@ -121,6 +121,16 @@ textarea{min-height:76px;resize:vertical;line-height:1.5}
 .form-foot{display:flex;gap:10px;align-items:center;padding:14px 16px;
   border-top:1px solid var(--line);background:var(--canvas)}
 
+.btn[disabled],.btn[aria-busy="true"]{opacity:.72;cursor:progress;pointer-events:none}
+.spin{width:14px;height:14px;border:2px solid currentColor;border-right-color:transparent;
+  border-radius:50%;animation:spin 620ms linear infinite;flex:none}
+@keyframes spin{to{transform:rotate(360deg)}}
+form[aria-busy="true"] input,form[aria-busy="true"] textarea,form[aria-busy="true"] select{
+  opacity:.7;pointer-events:none}
+.bar{position:fixed;top:0;left:0;height:2px;width:0;background:var(--green-600);
+  z-index:99;transition:width 320ms ease-out;opacity:0}
+.bar.on{opacity:1;width:82%;transition:width 9s cubic-bezier(.05,.7,.1,1)}
+
 .flash{padding:10px 14px;border-radius:var(--radius);font-size:13.5px;margin-bottom:18px;
   border:1px solid transparent}
 .flash.ok{background:var(--green-50);color:var(--green-700);border-color:#CBE5D8}
@@ -143,6 +153,58 @@ textarea{min-height:76px;resize:vertical;line-height:1.5}
   .content,.top{padding-left:16px;padding-right:16px}
   .grid2{grid-template-columns:1fr}
 }
+`;
+
+
+/**
+ * Submit feedback.
+ *
+ * Without this a form POST looks identical to a dead button: the browser
+ * shows nothing until the server responds, and on a slow connection the
+ * natural reaction is to click again — which on the login form means a
+ * second session, and on the service form a second audit entry.
+ *
+ * Progressive enhancement: the forms work with this script absent. It
+ * only adds the state that tells the person their click landed.
+ */
+const SUBMIT_JS = `
+(function () {
+  var bar = document.createElement('div');
+  bar.className = 'bar';
+  document.body.appendChild(bar);
+
+  document.addEventListener('submit', function (e) {
+    var form = e.target;
+    if (!(form instanceof HTMLFormElement) || form.dataset.busy) return;
+
+    // Let the browser's own validation win before we lock anything.
+    if (typeof form.checkValidity === 'function' && !form.checkValidity()) return;
+
+    form.dataset.busy = '1';
+    form.setAttribute('aria-busy', 'true');
+    requestAnimationFrame(function () { bar.classList.add('on'); });
+
+    var btn = form.querySelector('button[type=submit], button:not([type])');
+    if (!btn) return;
+    var label = btn.dataset.busyLabel || 'Working...';
+    btn.setAttribute('aria-busy', 'true');
+    btn.setAttribute('disabled', 'disabled');
+    btn.innerHTML = '<span class="spin"></span>' + label;
+  });
+
+  // A page restored from bfcache keeps the disabled button. Reset it.
+  window.addEventListener('pageshow', function (ev) {
+    if (!ev.persisted) return;
+    document.querySelectorAll('form[data-busy]').forEach(function (f) {
+      delete f.dataset.busy;
+      f.removeAttribute('aria-busy');
+    });
+    document.querySelectorAll('button[aria-busy]').forEach(function (b) {
+      b.removeAttribute('aria-busy');
+      b.removeAttribute('disabled');
+    });
+  });
+})();
 `;
 
 /** Stroked, 1.5px, 16px. One visual weight across the whole dashboard. */
@@ -245,6 +307,7 @@ export const Shell: FC<PropsWithChildren<{ title: string; path: string; email: s
           <main class="content">{children}</main>
         </div>
       </div>
+      <script>{raw(SUBMIT_JS)}</script>
     </body>
   </html>
 );
@@ -288,7 +351,12 @@ export const LoginPage: FC<{ error?: string }> = ({ error }) => (
               <label for="password">Password</label>
               <input id="password" name="password" type="password" required autocomplete="current-password" />
             </div>
-            <button class="btn primary" type="submit" style="width:100%;justify-content:center">
+            <button
+              class="btn primary"
+              type="submit"
+              data-busy-label="Signing in..."
+              style="width:100%;justify-content:center"
+            >
               <Icon name="lock" />
               Sign in
             </button>
@@ -299,6 +367,7 @@ export const LoginPage: FC<{ error?: string }> = ({ error }) => (
           </p>
         </div>
       </div>
+      <script>{raw(SUBMIT_JS)}</script>
     </body>
   </html>
 );

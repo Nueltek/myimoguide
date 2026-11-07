@@ -37,6 +37,11 @@ jobs:
       - name: Bundle size against the free-plan ceiling
         run: node scripts/check-bundle-size.mjs
 
+      # Runs the real admin routes against a real Postgres. Catches the
+      # class of bug that reading the code three times did not.
+      - name: Admin routes end to end
+        run: npm run test:e2e
+
       - name: Verify migrations are committed
         run: |
           npx drizzle-kit generate --name ci-drift-check
