@@ -208,6 +208,43 @@ gives CSRF protection on every form.
 
 ---
 
+## 5. If something fails
+
+### 5.1 Check the schema first
+
+```powershell
+curl.exe https://myimoguide.<subdomain>.workers.dev/health
+```
+
+`/health` now verifies that every expected table exists. A missing
+migration is otherwise invisible until someone hits the one route that
+touches the missing table — which is how a deploy that looks fine can
+still fail at the login screen.
+
+```json
+{ "ok": false, "database": { "ok": false, "missingTables": ["admin_sessions"] } }
+```
+
+That answer means `npm run db:migrate` has not been run against this
+database since the last pull. Run it and try again. The endpoint returns
+HTTP 503 while anything is missing.
+
+### 5.2 Dashboard errors carry a reference
+
+An error page shows a short reference such as `a3f91c20`. The same
+reference appears in `wrangler tail` on a line beginning `UNHANDLED`,
+with the full stack, the path and the method. Quote it rather than
+describing the symptom:
+
+```powershell
+npx wrangler tail --format pretty
+```
+
+- [ ] `/health` reports `"ok": true` with no missing tables
+- [ ] Sign-in succeeds; if not, the `UNHANDLED` line in tail names the cause
+
+---
+
 ## Phase 3 sign-off
 
 - [ ] Sections 1 and 2 pass

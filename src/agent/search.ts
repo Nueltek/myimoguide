@@ -83,9 +83,10 @@ export async function searchWeb(
       prompt: context ? `${context}\n\nUser: ${question}` : question,
       maxOutputTokens: 700,
       temperature: 0,
-      // Web search is slow. Cap it so a hung search cannot strand the user
-      // in silence; the queue will retry or the fallback will answer.
-      abortSignal: AbortSignal.timeout(25_000),
+      // Must finish inside the consumer's ANSWER_BUDGET_MS, which in turn
+      // sits inside WhatsApp's ~25s typing indicator. A search allowed to
+      // outlast the indicator leaves the user staring at nothing.
+      abortSignal: AbortSignal.timeout(18_000),
     });
 
     const sources = (result.sources ?? [])

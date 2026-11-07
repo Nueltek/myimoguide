@@ -15,6 +15,18 @@ import { activeConfig } from '../agent/models';
  * database round trip reused rather than several. Phase 2 spike 1 measures
  * whether this holds for a consumer; see spikes/README.md.
  */
+/** Must match max_retries in wrangler.jsonc. */
+const MAX_ATTEMPTS = 3;
+
+/**
+ * How long the whole pipeline may take before we give up and say so.
+ *
+ * WhatsApp's typing indicator lasts about 25 seconds. Past that the user
+ * sees nothing at all and concludes the service is dead, so the work has
+ * to finish — or fail honestly — inside that window.
+ */
+const ANSWER_BUDGET_MS = 22_000;
+
 export async function handleBatch(
   batch: MessageBatch<InboundJob>,
   env: Env,
@@ -28,10 +40,26 @@ export async function handleBatch(
       await handleOne(message.body, env, db);
       message.ack();
     } catch (err) {
-      console.error('consumer failed', message.body.messageId, err);
-      // retry() re-delivers with backoff; after max_retries it lands in the
-      // DLQ rather than disappearing.
-      message.retry();
+      console.error('consumer failed', {
+        messageId: message.body.messageId,
+        attempt: message.attempts,
+        error: err instanceof Error ? err.stack ?? err.message : String(err),
+      });
+
+      // Silence is the worst outcome. A user who sees a typing indicator
+      // and then nothing assumes the service is broken and re-sends,
+      // which multiplies the load that caused the failure. On the last
+      // attempt, say so and stop.
+      if (message.attempts >= MAX_ATTEMPTS) {
+        await sendText(
+          env,
+          message.body.from,
+          "I could not answer that just now — something failed on my side, not with your question.\n\nPlease send it again in a moment.",
+        ).catch(() => undefined);
+        message.ack();
+      } else {
+        message.retry();
+      }
     }
   }
 }
@@ -100,20 +128,30 @@ async function handleOne(
   const started = Date.now();
   const history = await convo.recent();
 
-  // A web search can take 10-20 seconds. On WhatsApp that silence reads
-  // as broken, so promise an answer before going to look for one. Only
-  // sent when the question is likely to miss the database — a verified
-  // answer returns fast enough not to need it.
-  const notice = maybeHoldingMessage(env, job);
+  // No "let me check that for you" message.
+  //
+  // markRead above already sends WhatsApp's native typing indicator, which
+  // is the right signal: it appears instantly, needs no message, and
+  // vanishes on its own. A holding message followed by a long wait is
+  // worse than the wait alone — it promises an answer, and when none
+  // arrives the user re-sends, multiplying the load.
+  //
+  // The budget keeps us inside the indicator's lifetime, so a slow search
+  // produces an honest reply rather than silence.
+  const result = await withBudget(
+    answerQuestion({ db, env, question: job.text, history }),
+    ANSWER_BUDGET_MS,
+  );
 
-  const result = await answerQuestion({
-    db,
-    env,
-    question: job.text,
-    history,
-  });
-
-  await notice;
+  if (!result) {
+    console.warn('answer exceeded budget', { messageId: job.messageId });
+    await sendText(
+      env,
+      job.from,
+      "That one is taking longer than it should and I would rather not leave you waiting.\n\nPlease send it again — if it keeps happening, the problem is mine to fix.",
+    );
+    return;
+  }
 
   // One line per answered question, so `wrangler tail` shows the tier and
   // the model that produced it without digging.
@@ -137,21 +175,16 @@ function isAdmin(env: Env, from: string): boolean {
   return list.length > 0 && list.includes(from.replace(/^\+/, ''));
 }
 
-/**
- * Fire-and-forget "checking" notice.
- *
- * Deliberately crude: anything clever enough to know whether the database
- * will miss would cost the same query we are trying to get ahead of. A
- * greeting and a short question are answered instantly; longer questions
- * are the ones that tend to reach the web.
- */
-async function maybeHoldingMessage(env: Env, job: InboundJob): Promise<void> {
-  if (job.text.trim().split(/\s+/).length < 4) return;
+/** Resolves to the value, or null if the deadline passes first. */
+async function withBudget<T>(work: Promise<T>, ms: number): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), ms);
+  });
   try {
-    await sendText(env, job.from, 'Let me check that for you...');
-  } catch (err) {
-    // Never let the courtesy message cost the user their answer.
-    console.warn('holding message failed', err instanceof Error ? err.message : String(err));
+    return await Promise.race([work, deadline]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 

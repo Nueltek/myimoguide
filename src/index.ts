@@ -5,6 +5,8 @@ import { isValidSignature, verificationChallenge } from './whatsapp/verify';
 import { handleBatch } from './queue/consumer';
 import { activeConfig } from './agent/models';
 import { admin } from './admin/routes';
+import { createDb } from './db/client';
+import { sql } from 'drizzle-orm';
 
 export { Conversation } from './conversation';
 
@@ -15,9 +17,39 @@ const app = new Hono<{ Bindings: Env }>();
  * confirmed from outside rather than assumed. Never exposes a key — only
  * whether one is present.
  */
-app.get('/health', (c) =>
-  c.json({ ok: true, service: 'myimoguide', ...activeConfig(c.env) }),
-);
+app.get('/health', async (c) => {
+  const base = { service: 'myimoguide', ...activeConfig(c.env) };
+
+  // Check the schema, not just that the process is up. A missing
+  // migration is otherwise invisible until someone hits the one route
+  // that touches the missing table — which is how a working deploy can
+  // still fail at the login screen.
+  let database: { ok: boolean; missingTables?: string[]; error?: string };
+  try {
+    const db = createDb(c.env.DATABASE_URL);
+    const expected = [
+      'agencies', 'services', 'facilities', 'state_facts',
+      'queries', 'admin_users', 'admin_sessions', 'audit_log',
+    ];
+    const result = await db.execute<{ table_name: string }>(
+      sql`select table_name from information_schema.tables where table_schema = 'public'`,
+    );
+    // The neon-http driver has returned both a bare array and a {rows}
+    // envelope across versions. Accept either rather than depending on it.
+    const rows: Array<{ table_name: string }> = Array.isArray(result)
+      ? result
+      : ((result as { rows?: Array<{ table_name: string }> }).rows ?? []);
+    const present = new Set(rows.map((r) => r.table_name));
+    const missing = expected.filter((t) => !present.has(t));
+    database = missing.length
+      ? { ok: false, missingTables: missing }
+      : { ok: true };
+  } catch (err) {
+    database = { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+
+  return c.json({ ok: database.ok, ...base, database }, database.ok ? 200 : 503);
+});
 
 /** Meta's one-time handshake when the webhook URL is saved. */
 app.get('/webhook/whatsapp', (c) => {
@@ -83,11 +115,43 @@ app.route('/admin', admin);
 app.notFound((c) => c.text('Not found', 404));
 
 app.onError((err, c) => {
-  console.error('unhandled', err instanceof Error ? err.stack : String(err));
+  // A bare "Internal error" is the same mistake as a swallowed search
+  // failure: it tells the person nothing and hides the cause from the
+  // logs they would check. The full stack goes to the log, and the
+  // response carries a short reference so a screenshot can be matched to
+  // a log line without guessing.
+  const ref = crypto.randomUUID().slice(0, 8);
+  console.error('UNHANDLED', {
+    ref,
+    path: c.req.path,
+    method: c.req.method,
+    error: err instanceof Error ? err.stack ?? err.message : String(err),
+  });
+
   // Still 200 on the webhook path: an error here is ours, and letting Meta
   // retry into the same bug just multiplies it.
   if (c.req.path === '/webhook/whatsapp') return c.body(null, 200);
-  return c.text('Internal error', 500);
+
+  if (c.req.path.startsWith('/admin')) {
+    return c.html(
+      `<!doctype html><meta charset="utf-8">
+       <title>Error</title>
+       <style>body{font:15px/1.6 ui-sans-serif,system-ui,sans-serif;margin:0;
+         min-height:100vh;display:grid;place-items:center;background:#F7F9F8;color:#121614}
+         .b{max-width:420px;padding:28px;background:#fff;border:1px solid #E2E6E3;border-radius:8px}
+         code{background:#F1F3F2;padding:2px 6px;border-radius:4px;font-size:13px}
+         p{color:#67706A;font-size:13.5px}</style>
+       <div class="b">
+         <h1 style="font-size:17px;margin:0 0 8px">Something went wrong</h1>
+         <p>The dashboard could not complete that request. This is a fault on our side.</p>
+         <p>Reference <code>${ref}</code> — quote it when reporting this. The full cause is in the server log.</p>
+         <p style="margin-bottom:0"><a href="/admin/login" style="color:#005A36">Back to sign in</a></p>
+       </div>`,
+      500,
+    );
+  }
+
+  return c.text(`Internal error (ref ${ref})`, 500);
 });
 
 /**
