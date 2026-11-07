@@ -1,4 +1,4 @@
-import type { Agency, Facility, Service } from '../db/schema';
+import type { Agency, Facility, Service, StateFact } from '../db/schema';
 
 /**
  * Answer rendering. Pure functions over database rows — no model involved.
@@ -128,7 +128,10 @@ export function renderFacilities(
  * steers the next question toward something answerable, which lifts the
  * resolution rate the pilot is measured on.
  */
-export function renderWelcome(catalogue: Array<{ name: string }>): string {
+export function renderWelcome(
+  catalogue: Array<{ name: string }>,
+  hasFacts: boolean,
+): string {
   const lines = ['Welcome to *MyImoGuide*.', ''];
 
   if (catalogue.length > 0) {
@@ -139,12 +142,29 @@ export function renderWelcome(catalogue: Array<{ name: string }>): string {
     lines.push('I can help you find hospitals, health centres and police stations across Imo State.');
   }
 
+  if (hasFacts) {
+    lines.push(
+      '',
+      'Ask me about the state itself too — when it was created, who governs it, the LGAs, and more.',
+    );
+  }
+
   lines.push(
     '',
     'Every answer I give comes from a verified record and carries the date it was checked. If I am not sure, I will say so rather than guess.',
   );
 
   return lines.join('\n');
+}
+
+/**
+ * General knowledge, rendered verbatim from the stored row.
+ *
+ * The `answer` column is human-authored from a cited source. Nothing here
+ * is generated, so the date in the reply is the date in the database.
+ */
+export function renderFact(fact: StateFact): string {
+  return [fact.answer, '', asOf(fact.verifiedAt, fact.confidence, fact.sourceUrl)].join('\n');
 }
 
 export function renderUnknown(catalogue: Array<{ name: string }>): string {

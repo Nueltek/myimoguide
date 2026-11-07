@@ -145,6 +145,49 @@ export const facilities = pgTable('facilities', {
   uniqueIndex('facilities_name_lga_idx').on(t.name, t.lga),
 ]);
 
+export const factCategoryEnum = pgEnum('fact_category', [
+  'history', 'geography', 'government', 'demographics', 'culture',
+]);
+
+/**
+ * General knowledge about the state: when it was created, who governs it,
+ * how many LGAs, where the name comes from.
+ *
+ * This does not break the "model never writes facts" rule. The `answer`
+ * text is authored by a human from a cited source and stored, then
+ * rendered verbatim — the model only picks which row to return. The
+ * alternative, letting the model answer from its own weights, is exactly
+ * the failure the whole design exists to prevent: a plausible wrong date
+ * in front of someone who knows the right one.
+ *
+ * Churn varies enormously by row, which is why verifiedAt is per-fact.
+ * "Created 3 February 1976" will never change. "The current governor" can
+ * change between a demo and a follow-up meeting.
+ */
+export const stateFacts = pgTable('state_facts', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  slug: varchar('slug', { length: 96 }).notNull(),
+  /** What the fact is about, for the routing prompt: "when the state was created". */
+  topic: text('topic').notNull(),
+  /** Other ways people ask it, to help routing. */
+  aliases: text('aliases').array().notNull().default([]),
+  /** The answer, verbatim. WhatsApp markdown is allowed. */
+  answer: text('answer').notNull(),
+  category: factCategoryEnum('category').notNull(),
+
+  sourceUrl: text('source_url'),
+  confidence: confidenceEnum('confidence').notNull().default('published'),
+  verifiedAt: timestamp('verified_at', { withTimezone: true }),
+  verifiedBy: text('verified_by'),
+  isPublished: boolean('is_published').notNull().default(true),
+
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex('state_facts_slug_idx').on(t.slug),
+  index('state_facts_published_idx').on(t.isPublished),
+]);
+
 /**
  * Intent routing. One row per phrasing we can match, pointing at a service
  * or facility type. pgvector for fuzzy matching; Postgres full-text for the
@@ -231,3 +274,4 @@ export const auditLog = pgTable('audit_log', {
 export type Service = typeof services.$inferSelect;
 export type Facility = typeof facilities.$inferSelect;
 export type Agency = typeof agencies.$inferSelect;
+export type StateFact = typeof stateFacts.$inferSelect;

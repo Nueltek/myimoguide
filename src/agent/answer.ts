@@ -4,8 +4,8 @@ import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import type { Env } from '../types';
 import type { Db } from '../db/client';
-import { agencies, facilities, services } from '../db/schema';
-import { renderFacilities, renderService, renderUnknown, renderWelcome } from './render';
+import { agencies, facilities, services, stateFacts } from '../db/schema';
+import { renderFact, renderFacilities, renderService, renderUnknown, renderWelcome } from './render';
 
 /**
  * The agent layer, and the single rule it exists to enforce:
@@ -52,15 +52,20 @@ const FACILITY_TYPES = [
 
 const routeSchema = z.object({
   kind: z
-    .enum(['greeting', 'service', 'facility', 'none'])
+    .enum(['greeting', 'service', 'facility', 'about', 'none'])
     .describe(
       'greeting = hello/thanks/small talk with no question; service = a government process; ' +
-      'facility = find a place; none = a real question we cannot route',
+      'facility = find a place; about = general knowledge about the state; ' +
+      'none = a real question we cannot route',
     ),
   serviceSlug: z
     .string()
     .nullable()
-    .describe('Exact slug from the catalogue. Null unless kind is "service".'),
+    .describe('Exact slug from the service catalogue. Null unless kind is "service".'),
+  factSlug: z
+    .string()
+    .nullable()
+    .describe('Exact slug from the facts list. Null unless kind is "about".'),
   facilityType: z
     .enum(FACILITY_TYPES)
     .nullable()
@@ -77,27 +82,56 @@ const routeSchema = z.object({
 export async function answerQuestion(input: AnswerInput): Promise<AnswerResult> {
   const { db, env, question, history } = input;
 
-  // Six to eight published services fit in a prompt comfortably, so routing
-  // needs no vector search at this scale. pgvector is in the schema for
-  // when the catalogue grows past what a prompt can hold.
-  const catalogue = await db
-    .select({
-      id: services.id,
-      slug: services.slug,
-      name: services.name,
-      aliases: services.aliases,
-      summary: services.summary,
-    })
-    .from(services)
-    .where(eq(services.isPublished, true));
+  // Both catalogues in ONE batch — neon-http sends it as a single request,
+  // so this costs one subrequest rather than two against the 50 cap.
+  //
+  // Six to eight services plus a few dozen facts fit in a routing prompt
+  // comfortably, so no vector search is needed at this scale. pgvector is
+  // in the schema for when the catalogue outgrows a prompt.
+  const [catalogue, facts] = await db.batch([
+    db
+      .select({
+        id: services.id,
+        slug: services.slug,
+        name: services.name,
+        aliases: services.aliases,
+        summary: services.summary,
+      })
+      .from(services)
+      .where(eq(services.isPublished, true)),
+    db
+      .select({
+        id: stateFacts.id,
+        slug: stateFacts.slug,
+        topic: stateFacts.topic,
+        aliases: stateFacts.aliases,
+      })
+      .from(stateFacts)
+      .where(eq(stateFacts.isPublished, true)),
+  ]);
 
-  const route = await routeQuestion(env, question, history, catalogue);
+  const route = await routeQuestion(env, question, history, catalogue, facts);
 
   // A greeting is the first thing almost everyone sends. Answering it with
   // "I don't have a confirmed answer" is the worst possible opening, so
   // greetings get a welcome that states what the agent can actually do.
   if (route.kind === 'greeting') {
-    return { text: renderWelcome(catalogue), resolved: true };
+    return { text: renderWelcome(catalogue, facts.length > 0), resolved: true };
+  }
+
+  // General knowledge about the state. An assistant that cannot say when
+  // Imo State was created has no business calling itself a state guide,
+  // and it is the first thing anyone tests.
+  if (route.kind === 'about' && route.factSlug) {
+    const hit = facts.find((f) => f.slug === route.factSlug);
+    if (hit) {
+      const [row] = await db
+        .select()
+        .from(stateFacts)
+        .where(eq(stateFacts.id, hit.id))
+        .limit(1);
+      if (row) return { text: renderFact(row), resolved: true };
+    }
   }
 
   if (route.kind === 'service' && route.serviceSlug && route.confidence === 'high') {
@@ -153,11 +187,16 @@ async function routeQuestion(
   question: string,
   history: Array<{ role: 'user' | 'assistant'; text: string }>,
   catalogue: Array<{ slug: string; name: string; aliases: string[]; summary: string }>,
+  facts: Array<{ slug: string; topic: string; aliases: string[] }>,
 ): Promise<z.infer<typeof routeSchema>> {
   const anthropic = createAnthropic({ apiKey: env.ANTHROPIC_API_KEY });
 
   const catalogueText = catalogue
     .map((s) => `- ${s.slug}: ${s.name}${s.aliases.length ? ` (also: ${s.aliases.join(', ')})` : ''} — ${s.summary}`)
+    .join('\n');
+
+  const factsText = facts
+    .map((f) => `- ${f.slug}: ${f.topic}${f.aliases.length ? ` (also: ${f.aliases.join(', ')})` : ''}`)
     .join('\n');
 
   const context = history
@@ -179,8 +218,12 @@ async function routeQuestion(
       'Services available:',
       catalogueText || '(none published yet)',
       '',
+      'General knowledge available:',
+      factsText || '(none published yet)',
+      '',
       'Rules:',
       '- Pick kind="greeting" for hello, good morning, thanks, or small talk with no question in it.',
+      '- Pick kind="about" when the question is general knowledge about Imo State and matches a fact above. Set factSlug.',
       '- Pick kind="service" only when the question is about one of the catalogued services.',
       '- Pick kind="facility" when the user wants to find a hospital, health centre, pharmacy, police or similar place.',
       '- Pick kind="none" for anything else, including federal matters (NIN, passport, JAMB, CAC).',
