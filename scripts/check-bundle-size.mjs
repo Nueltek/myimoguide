@@ -11,13 +11,18 @@
  */
 import { execFileSync } from 'node:child_process';
 import { gzipSync } from 'node:zlib';
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 const MAX_KIB = 3 * 1024; // hard free-plan ceiling
 const WARN_KIB = 2 * 1024; // react before it bites
 
 const OUT = '.dist';
+
+// Start from an empty directory, so only what this build emits is
+// measured. Anything left behind — a test bundle, an old build — would
+// otherwise be counted as Worker code and inflate the result.
+rmSync(OUT, { recursive: true, force: true });
 
 execFileSync('npx', ['wrangler', 'deploy', '--dry-run', `--outdir=${OUT}`], {
   stdio: 'inherit',

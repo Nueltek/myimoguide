@@ -48,8 +48,25 @@ export const lgaEnum = pgEnum('lga', [
 /** The agencies that own services. One relationship to maintain per row. */
 export const agencies = pgTable('agencies', {
   id: uuid('id').primaryKey().defaultRandom(),
+  /**
+   * Stable handle the router names, as with services and facts. Models
+   * copy short slugs reliably; they mis-copy UUIDs often enough to matter.
+   */
+  slug: varchar('slug', { length: 96 }),
   name: text('name').notNull(),
   shortName: varchar('short_name', { length: 32 }),
+
+  /**
+   * Who leads it and what it is responsible for. This is what answers the
+   * most common question a state assistant gets — "who do I talk to about
+   * X?" — and it changes with every cabinet reshuffle, which is why it
+   * lives here, editable and audited, rather than in a seed file.
+   */
+  headName: text('head_name'),
+  headTitle: text('head_title'),
+  responsibilities: text('responsibilities'),
+  isPublished: boolean('is_published').notNull().default(true),
+
   address: text('address'),
   phone: varchar('phone', { length: 32 }),
   email: varchar('email', { length: 160 }),
@@ -66,7 +83,10 @@ export const agencies = pgTable('agencies', {
 
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-}, (t) => [uniqueIndex('agencies_name_idx').on(t.name)]);
+}, (t) => [
+  uniqueIndex('agencies_name_idx').on(t.name),
+  uniqueIndex('agencies_slug_idx').on(t.slug),
+]);
 
 /**
  * A transactional government service: the thing a citizen needs to DO.

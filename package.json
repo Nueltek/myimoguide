@@ -19,7 +19,7 @@
     "db:seed:services": "tsx scripts/seed-services.ts",
     "db:seed": "npm run db:seed:facts && npm run db:seed:services",
     "admin:create": "tsx scripts/create-admin.ts",
-    "test:e2e": "esbuild scripts/e2e-admin.ts --bundle --platform=node --format=esm --jsx=automatic --jsx-import-source=hono/jsx --outfile=.dist/e2e.mjs --external:@electric-sql/pglite --log-level=error && node .dist/e2e.mjs",
+    "test:e2e": "esbuild scripts/e2e-admin.ts --bundle --platform=node --format=esm --jsx=automatic --jsx-import-source=hono/jsx --outfile=.test-build/e2e.mjs --external:@electric-sql/pglite --log-level=error && node .test-build/e2e.mjs",
     "test:dedupe": "tsx scripts/test-dedupe.ts",
     "test": "npm run test:dedupe && npm run test:e2e"
   },

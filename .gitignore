@@ -6,3 +6,4 @@ node_modules/
 drizzle/meta/_journal.json.bak
 *.log
 .DS_Store
+.test-build/

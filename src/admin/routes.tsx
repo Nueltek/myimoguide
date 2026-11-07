@@ -1,9 +1,8 @@
 import { Hono } from 'hono';
-import { getCookie, setCookie } from 'hono/cookie';
+import { getCookie } from 'hono/cookie';
 import { desc, eq, sql } from 'drizzle-orm';
-import type { Env } from '../types';
-import { createDb, type Db } from '../db/client';
-import { auditLog, adminUsers, agencies, queries, services } from '../db/schema';
+import { createDb } from '../db/client';
+import { auditLog, adminUsers, queries, services } from '../db/schema';
 import {
   SESSION_COOKIE,
   clearedCookie,
@@ -14,9 +13,13 @@ import {
   verifyPassword,
   type SessionUser,
 } from './auth';
-import { ConfidenceBadge, Icon, LoginPage, Shell, formatDate } from './layout';
+import { ConfidenceBadge, Icon, LoginPage, Shell, formatDate, formatDateTime } from './layout';
 
-type Ctx = { Bindings: Env; Variables: { db: Db; user: SessionUser } };
+import { audit, type Ctx } from './context';
+import { agenciesAdmin } from './resources/agencies';
+import { facilitiesAdmin } from './resources/facilities';
+import { factsAdmin } from './resources/facts';
+import { servicesAdmin } from './resources/services';
 
 export const admin = new Hono<Ctx>();
 
@@ -71,7 +74,8 @@ admin.post('/login', async (c) => {
   });
 
   await db.update(adminUsers).set({ lastLoginAt: new Date() }).where(eq(adminUsers.id, user.id));
-  await record(db, user, 'login', 'admin_users', user.id, null, null, c.req.header('cf-connecting-ip'));
+  c.set('user', { id: user.id, email: user.email, role: user.role });
+  await audit(c, 'login', 'admin_users', user.id, null, null);
 
   c.header('Set-Cookie', sessionCookie(token, expiresAt));
   return c.redirect('/admin');
@@ -176,7 +180,7 @@ admin.get('/', async (c) => {
                   <td>{q.question}</td>
                   <td><TierBadge tier={q.tier} /></td>
                   <td class="t-dim">{q.provider ?? '—'}</td>
-                  <td class="num t-dim">{q.createdAt.toLocaleString('en-GB')}</td>
+                  <td class="num t-dim">{formatDateTime(q.createdAt)}</td>
                 </tr>
               ))}
             </tbody>
@@ -185,264 +189,6 @@ admin.get('/', async (c) => {
       </div>
     </Shell>,
   );
-});
-
-/* ------------------------------------------------------------------ */
-
-admin.get('/services', async (c) => {
-  const db = c.get('db');
-  const rows = await db
-    .select({
-      id: services.id,
-      name: services.name,
-      agency: agencies.shortName,
-      feeAmount: services.feeAmount,
-      confidence: services.confidence,
-      verifiedAt: services.verifiedAt,
-      isPublished: services.isPublished,
-    })
-    .from(services)
-    .leftJoin(agencies, eq(services.agencyId, agencies.id))
-    .orderBy(services.name);
-
-  const saved = c.req.query('saved');
-
-  return c.html(
-    <Shell title="Services" path="/admin/services" email={c.get('user').email}>
-      {saved ? (
-        <div class="flash ok">
-          <Icon name="check" /> Saved. The assistant is already using the new value.
-        </div>
-      ) : null}
-
-      <div class="panel">
-        <div class="panel-h">
-          <div>
-            <h2>Service catalogue</h2>
-            <p>What the assistant answers from. A fee left blank is never guessed.</p>
-          </div>
-        </div>
-        <table>
-          <thead>
-            <tr>
-              <th>Service</th>
-              <th style="width:110px">Agency</th>
-              <th style="width:130px">Fee</th>
-              <th style="width:120px">Confidence</th>
-              <th style="width:120px">Verified</th>
-              <th style="width:80px"></th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((s) => (
-              <tr>
-                <td class="t-strong">
-                  {s.name}
-                  {!s.isPublished ? <span class="badge muted" style="margin-left:8px">Hidden</span> : null}
-                </td>
-                <td class="t-dim">{s.agency ?? '—'}</td>
-                <td class="num">
-                  {s.feeAmount ? (
-                    `₦${Number(s.feeAmount).toLocaleString('en-NG')}`
-                  ) : (
-                    <span class="t-dim">Not confirmed</span>
-                  )}
-                </td>
-                <td><ConfidenceBadge value={s.confidence} /></td>
-                <td class="num t-dim">{formatDate(s.verifiedAt)}</td>
-                <td><a class="btn" href={`/admin/services/${s.id}`}>Edit</a></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </Shell>,
-  );
-});
-
-admin.get('/services/:id', async (c) => {
-  const db = c.get('db');
-  const [row] = await db.select().from(services).where(eq(services.id, c.req.param('id'))).limit(1);
-  if (!row) return c.notFound();
-
-  return c.html(
-    <Shell title={row.name} path="/admin/services" email={c.get('user').email}>
-      <a class="btn" href="/admin/services" style="margin-bottom:18px">
-        <Icon name="back" /> All services
-      </a>
-
-      <form method="post" action={`/admin/services/${row.id}`}>
-        <div class="panel">
-          <div class="panel-h">
-            <div>
-              <h2>Edit service</h2>
-              <p>Changes take effect on the next question. Every edit is recorded in the audit log.</p>
-            </div>
-          </div>
-
-          <div style="padding:18px 16px">
-            <div class="field">
-              <label for="name">Service name</label>
-              <input id="name" name="name" type="text" value={row.name} required />
-            </div>
-
-            <div class="field">
-              <label for="summary">Summary</label>
-              <textarea id="summary" name="summary" required>{row.summary}</textarea>
-              <div class="hint">One or two sentences. This is read out to the user verbatim.</div>
-            </div>
-
-            <div class="grid2">
-              <div class="field">
-                <label for="feeAmount">Fee (₦)</label>
-                <input
-                  id="feeAmount"
-                  name="feeAmount"
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  value={row.feeAmount ?? ''}
-                />
-                <div class="hint">Leave blank if not confirmed. A blank fee is never guessed.</div>
-              </div>
-              <div class="field">
-                <label for="confidence">Confidence</label>
-                <select id="confidence" name="confidence">
-                  <option value="confirmed" selected={row.confidence === 'confirmed'}>
-                    Confirmed — checked by phone with a named officer
-                  </option>
-                  <option value="published" selected={row.confidence === 'published'}>
-                    Published — from the agency's own site
-                  </option>
-                  <option value="unverified" selected={row.confidence === 'unverified'}>
-                    Unverified — secondary source
-                  </option>
-                </select>
-              </div>
-            </div>
-
-            <div class="field">
-              <label for="feeNote">Fee note</label>
-              <textarea id="feeNote" name="feeNote">{row.feeNote ?? ''}</textarea>
-              <div class="hint">Shown when the fee varies, or to explain why it is not stated.</div>
-            </div>
-
-            <div class="grid2">
-              <div class="field">
-                <label for="paymentChannel">Where to pay</label>
-                <input id="paymentChannel" name="paymentChannel" type="text" value={row.paymentChannel ?? ''} />
-              </div>
-              <div class="field">
-                <label for="turnaround">How long it takes</label>
-                <input id="turnaround" name="turnaround" type="text" value={row.turnaround ?? ''} />
-              </div>
-            </div>
-
-            <div class="field">
-              <label for="requiredDocuments">Required documents</label>
-              <textarea id="requiredDocuments" name="requiredDocuments">
-                {row.requiredDocuments.join('\n')}
-              </textarea>
-              <div class="hint">One per line.</div>
-            </div>
-
-            <div class="field">
-              <label for="steps">Steps</label>
-              <textarea id="steps" name="steps" style="min-height:120px">
-                {row.steps.join('\n')}
-              </textarea>
-              <div class="hint">One per line, in order.</div>
-            </div>
-
-            <div class="grid2">
-              <div class="field">
-                <label for="sourceUrl">Source URL</label>
-                <input id="sourceUrl" name="sourceUrl" type="text" value={row.sourceUrl ?? ''} />
-              </div>
-              <div class="field">
-                <label for="verifiedBy">Verified by</label>
-                <input
-                  id="verifiedBy"
-                  name="verifiedBy"
-                  type="text"
-                  value={row.verifiedBy ?? ''}
-                  placeholder="Name of the officer who confirmed it"
-                />
-              </div>
-            </div>
-
-            <div class="field" style="margin-bottom:0">
-              <label>
-                <input
-                  type="checkbox"
-                  name="isPublished"
-                  value="1"
-                  checked={row.isPublished}
-                  style="width:auto;margin-right:8px"
-                />
-                Visible to users
-              </label>
-              <div class="hint">Uncheck to withdraw this service from answers without deleting it.</div>
-            </div>
-          </div>
-
-          <div class="form-foot">
-            <button class="btn primary" type="submit" data-busy-label="Saving...">
-              <Icon name="check" /> Save changes
-            </button>
-            <span class="t-dim">
-              Last verified {formatDate(row.verifiedAt)}. Saving updates this to today.
-            </span>
-          </div>
-        </div>
-      </form>
-    </Shell>,
-  );
-});
-
-admin.post('/services/:id', async (c) => {
-  const db = c.get('db');
-  const user = c.get('user');
-  const id = c.req.param('id');
-
-  const [before] = await db.select().from(services).where(eq(services.id, id)).limit(1);
-  if (!before) return c.notFound();
-
-  const form = await c.req.formData();
-  const str = (k: string) => String(form.get(k) ?? '').trim();
-  const lines = (k: string) =>
-    str(k)
-      .split('\n')
-      .map((l) => l.trim())
-      .filter(Boolean);
-
-  const fee = str('feeAmount');
-  const confidence = str('confidence');
-
-  const after = {
-    name: str('name'),
-    summary: str('summary'),
-    feeAmount: fee === '' ? null : fee,
-    feeNote: str('feeNote') || null,
-    paymentChannel: str('paymentChannel') || null,
-    turnaround: str('turnaround') || null,
-    requiredDocuments: lines('requiredDocuments'),
-    steps: lines('steps'),
-    sourceUrl: str('sourceUrl') || null,
-    verifiedBy: str('verifiedBy') || null,
-    confidence: (['confirmed', 'published', 'unverified'].includes(confidence)
-      ? confidence
-      : 'unverified') as 'confirmed' | 'published' | 'unverified',
-    isPublished: form.get('isPublished') === '1',
-    // A save is a statement that someone looked at this today.
-    verifiedAt: new Date(),
-    updatedAt: new Date(),
-  };
-
-  await db.update(services).set(after).where(eq(services.id, id));
-  await record(db, user, 'update', 'services', id, before, after, c.req.header('cf-connecting-ip'));
-
-  return c.redirect('/admin/services?saved=1');
 });
 
 /* ------------------------------------------------------------------ */
@@ -508,7 +254,7 @@ admin.get('/queries', async (c) => {
                   <td><TierBadge tier={q.tier} /></td>
                   <td class="t-dim">{q.model ?? '—'}</td>
                   <td class="num t-dim">{q.latencyMs ? `${(q.latencyMs / 1000).toFixed(1)}s` : '—'}</td>
-                  <td class="num t-dim">{q.createdAt.toLocaleString('en-GB')}</td>
+                  <td class="num t-dim">{formatDateTime(q.createdAt)}</td>
                 </tr>
               ))}
             </tbody>
@@ -552,7 +298,7 @@ admin.get('/audit', async (c) => {
             <tbody>
               {rows.map((a) => (
                 <tr>
-                  <td class="num t-dim">{a.createdAt.toLocaleString('en-GB')}</td>
+                  <td class="num t-dim">{formatDateTime(a.createdAt)}</td>
                   <td>{a.actorEmail}</td>
                   <td><span class="badge muted">{a.action}</span></td>
                   <td class="t-dim">{a.tableName}{a.rowId ? ` · ${a.rowId.slice(0, 8)}` : ''}</td>
@@ -568,52 +314,17 @@ admin.get('/audit', async (c) => {
 });
 
 /* Stubs so the navigation is never a dead link. */
-for (const [path, label] of [
-  ['/facilities', 'Facilities'],
-  ['/facts', 'State facts'],
-] as const) {
-  admin.get(path, (c) =>
-    c.html(
-      <Shell title={label} path={`/admin${path}`} email={c.get('user').email}>
-        <div class="panel">
-          <div class="empty">
-            {label} editing is not built yet. Records are managed through the seed scripts for now.
-          </div>
-        </div>
-      </Shell>,
-    ),
-  );
-}
 
 /* ------------------------------------------------------------------ */
 
-/**
- * Append-only audit entry. Never updated, never deleted.
- *
- * Doing double duty: a real security control, and the thing a government
- * buyer asks about first — who changed this published fee, and when.
- */
-async function record(
-  db: Db,
-  user: { id: string; email: string },
-  action: string,
-  table: string,
-  rowId: string | null,
-  before: unknown,
-  after: unknown,
-  ip?: string,
-): Promise<void> {
-  await db.insert(auditLog).values({
-    actorId: user.id,
-    actorEmail: user.email,
-    action,
-    tableName: table,
-    rowId,
-    before: before ?? null,
-    after: after ?? null,
-    ipAddress: ip ?? null,
-  });
-}
+
+/* Record management. Each module is behind the same auth middleware. */
+admin.route('/services', servicesAdmin);
+admin.route('/agencies', agenciesAdmin);
+admin.route('/facilities', facilitiesAdmin);
+admin.route('/facts', factsAdmin);
+
+/* ------------------------------------------------------------------ */
 
 function pct(n: number, total: number): number {
   return total === 0 ? 0 : Math.round((n / total) * 100);

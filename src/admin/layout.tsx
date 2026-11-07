@@ -109,7 +109,8 @@ td.num{font-variant-numeric:tabular-nums;white-space:nowrap}
 
 label{display:block;font-size:12.5px;font-weight:500;color:var(--ink-700);margin-bottom:5px}
 .hint{font-size:12px;color:var(--ink-500);font-weight:400;margin-top:4px}
-input[type=text],input[type=email],input[type=password],input[type=number],textarea,select{
+input[type=text],input[type=email],input[type=password],input[type=number],
+input[type=tel],input[type=url],input[type=search],textarea,select{
   width:100%;padding:8px 10px;border:1px solid var(--line-strong);border-radius:var(--radius);
   font:inherit;font-size:13.5px;background:var(--surface);color:var(--ink-900);
   transition:border-color var(--t),box-shadow var(--t)}
@@ -130,6 +131,37 @@ form[aria-busy="true"] input,form[aria-busy="true"] textarea,form[aria-busy="tru
 .bar{position:fixed;top:0;left:0;height:2px;width:0;background:var(--green-600);
   z-index:99;transition:width 320ms ease-out;opacity:0}
 .bar.on{opacity:1;width:82%;transition:width 9s cubic-bezier(.05,.7,.1,1)}
+
+.btn.ghost{border-color:transparent;background:transparent;color:var(--ink-700)}
+.btn.ghost:hover{background:var(--line);border-color:transparent}
+.btn.sm{padding:5px 10px;font-size:12.5px}
+
+.form-body{padding:4px 16px 8px}
+.section{border:0;margin:0;padding:18px 0 6px;border-bottom:1px solid var(--line)}
+.section:last-child{border-bottom:0}
+.section legend{font-size:11.5px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;
+  color:var(--ink-500);padding:0;margin-bottom:12px}
+.section-note{font-size:12.5px;color:var(--ink-500);margin:-6px 0 14px;max-width:62ch}
+.opt{font-weight:400;color:var(--ink-300);font-size:12px}
+.err{display:flex;align-items:center;gap:5px;font-size:12.5px;color:var(--red-600);margin-top:5px}
+.field.has-error input,.field.has-error textarea,.field.has-error select{
+  border-color:var(--red-600);box-shadow:0 0 0 3px rgba(180,35,24,.08)}
+.field.check{margin-bottom:12px}
+.check-label{display:flex;align-items:center;gap:9px;font-weight:500;color:var(--ink-900);
+  font-size:13.5px;cursor:pointer;margin:0}
+.check-label input{width:16px;height:16px;accent-color:var(--green-600);margin:0}
+.err-summary{border:1px solid #F6CFCB;border-left:4px solid var(--red-600);background:var(--red-50);
+  border-radius:var(--radius);padding:14px 16px;margin-bottom:18px}
+.err-summary:focus{outline:2px solid var(--red-600);outline-offset:2px}
+.err-summary h2{display:flex;align-items:center;gap:8px;font-size:14.5px;color:var(--red-600);margin:0 0 8px}
+.err-summary ul{margin:0;padding-left:20px}
+.err-summary li{margin:3px 0}
+.err-summary a{color:var(--red-600);text-decoration:underline;font-size:13.5px}
+.toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:16px}
+.toolbar .spacer{flex:1}
+.toolbar select{width:auto;min-width:160px}
+.slug{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:var(--ink-500)}
+.clip{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;max-width:52ch}
 
 .flash{padding:10px 14px;border-radius:var(--radius);font-size:13.5px;margin-bottom:18px;
   border:1px solid transparent}
@@ -192,6 +224,10 @@ const SUBMIT_JS = `
     btn.innerHTML = '<span class="spin"></span>' + label;
   });
 
+  // After a failed save, move focus to the list of problems.
+  var summary = document.getElementById('error-summary');
+  if (summary) summary.focus();
+
   // A page restored from bfcache keeps the disabled button. Reset it.
   window.addEventListener('pageshow', function (ev) {
     if (!ev.persisted) return;
@@ -237,6 +273,8 @@ const PATHS = {
   alert: '<path d="M12 9v4m0 4h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/>',
   back: '<path d="m12 19-7-7 7-7M19 12H5"/>',
   lock: '<rect width="18" height="11" x="3" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+  landmark: '<path d="M3 22h18M6 18v-7m4 7v-7m4 7v-7m4 7v-7M12 2 3 7h18Z"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
 } as const;
 
 type Nav = { href: string; label: string; icon: keyof typeof PATHS };
@@ -244,6 +282,7 @@ type Nav = { href: string; label: string; icon: keyof typeof PATHS };
 const NAV: Nav[] = [
   { href: '/admin', label: 'Overview', icon: 'gauge' },
   { href: '/admin/services', label: 'Services', icon: 'list' },
+  { href: '/admin/agencies', label: 'Agencies', icon: 'landmark' },
   { href: '/admin/facilities', label: 'Facilities', icon: 'building' },
   { href: '/admin/facts', label: 'State facts', icon: 'book' },
   { href: '/admin/queries', label: 'Questions', icon: 'message' },
@@ -280,7 +319,14 @@ export const Shell: FC<PropsWithChildren<{ title: string; path: string; email: s
           </div>
           <nav class="nav">
             {NAV.map((item) => (
-              <a href={item.href} aria-current={path === item.href ? 'page' : undefined}>
+              <a
+                href={item.href}
+                aria-current={
+                  path === item.href || (item.href !== '/admin' && path.startsWith(`${item.href}/`))
+                    ? 'page'
+                    : undefined
+                }
+              >
                 <Icon name={item.icon} />
                 {item.label}
               </a>
@@ -388,7 +434,22 @@ export const ConfidenceBadge: FC<{ value: string | null }> = ({ value }) => {
   );
 };
 
+/** All staff-facing dates are West Africa Time; the runtime clock is UTC. */
+const WAT = 'Africa/Lagos';
+
 export function formatDate(d: Date | null): string {
   if (!d) return '—';
-  return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+  return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: WAT });
+}
+
+export function formatDateTime(d: Date | null): string {
+  if (!d) return '—';
+  return d.toLocaleString('en-GB', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZone: WAT,
+  });
 }

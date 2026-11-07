@@ -26,7 +26,14 @@ function money(amount: string | null, currency: string): string | null {
 
 function asOf(verifiedAt: Date | null, confidence: string, sourceUrl: string | null): string {
   const date = verifiedAt
-    ? verifiedAt.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+    ? verifiedAt.toLocaleDateString('en-GB', {
+        day: 'numeric',
+        month: 'short',
+        year: 'numeric',
+        // The runtime clock is UTC. A record verified at 11pm in Owerri
+        // would otherwise print as the previous day.
+        timeZone: 'Africa/Lagos',
+      })
     : null;
 
   if (confidence === 'confirmed' && date) {
@@ -72,6 +79,50 @@ export function renderService(service: Service, agency: Agency | null): string {
 
   lines.push('', asOf(service.verifiedAt, service.confidence, service.sourceUrl));
 
+  return lines.join('\n');
+}
+
+/**
+ * An office: who heads it, what it is responsible for, how to reach it.
+ *
+ * When the head's name is not on record, say so plainly rather than
+ * leaving the line out. "Who is the commissioner for lands?" answered
+ * with an address and no name reads as evasion; an explicit "not yet
+ * confirmed" reads as honesty, and tells the dashboard team what to fill.
+ */
+export function renderAgency(agency: Agency, offered: Array<{ name: string }>): string {
+  const title = agency.shortName && agency.shortName !== agency.name
+    ? `*${agency.name}* (${agency.shortName})`
+    : `*${agency.name}*`;
+  const lines: string[] = [title];
+
+  if (agency.headName) {
+    lines.push('', `*Head:* ${[agency.headTitle, agency.headName].filter(Boolean).join(' ')}`);
+  } else if (agency.headTitle) {
+    lines.push('', `Headed by the ${agency.headTitle}. I don't have a confirmed name on record yet.`);
+  }
+
+  if (agency.responsibilities) {
+    lines.push('', `*Responsible for:* ${agency.responsibilities}`);
+  }
+
+  if (offered.length > 0) {
+    lines.push('', '*I can walk you through:*');
+    for (const s of offered) lines.push(`• ${s.name}`);
+  }
+
+  const contact: string[] = [];
+  if (agency.address) contact.push(agency.address);
+  if (agency.hours) contact.push(`Open: ${agency.hours}`);
+  if (agency.phone) contact.push(`Phone: ${agency.phone}`);
+  if (agency.email) contact.push(`Email: ${agency.email}`);
+  if (agency.website) contact.push(agency.website);
+  if (agency.latitude != null && agency.longitude != null) {
+    contact.push(mapLink(agency.latitude, agency.longitude));
+  }
+  if (contact.length > 0) lines.push('', '*Contact*', ...contact);
+
+  lines.push('', asOf(agency.verifiedAt, agency.confidence, agency.sourceUrl));
   return lines.join('\n');
 }
 

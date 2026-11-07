@@ -1,10 +1,11 @@
 import { generateObject } from 'ai';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNotNull } from 'drizzle-orm';
 import { z } from 'zod';
 import type { Env } from '../types';
 import type { Db } from '../db/client';
 import { agencies, facilities, services, stateFacts } from '../db/schema';
 import {
+  renderAgency,
   renderFact,
   renderFacilities,
   renderNeedsOfficial,
@@ -89,9 +90,10 @@ const FACILITY_TYPES = [
 
 const routeSchema = z.object({
   kind: z
-    .enum(['greeting', 'service', 'facility', 'about', 'none'])
+    .enum(['greeting', 'service', 'agency', 'facility', 'about', 'none'])
     .describe(
       'greeting = hello/thanks/small talk with no question; service = a government process; ' +
+      'agency = who handles, heads or can be contacted about something; ' +
       'facility = find a place; about = general knowledge about the state; ' +
       'none = a real question we cannot route',
     ),
@@ -103,6 +105,10 @@ const routeSchema = z.object({
     .string()
     .nullable()
     .describe('Exact slug from the facts list. Null unless kind is "about".'),
+  agencySlug: z
+    .string()
+    .nullable()
+    .describe('Exact slug from the agencies list. Null unless kind is "agency".'),
   facilityType: z
     .enum(FACILITY_TYPES)
     .nullable()
@@ -139,7 +145,7 @@ export async function answerQuestion(input: AnswerInput): Promise<AnswerResult> 
   // Six to eight services plus a few dozen facts fit in a routing prompt
   // comfortably, so no vector search is needed at this scale. pgvector is
   // in the schema for when the catalogue outgrows a prompt.
-  const [catalogue, facts] = await db.batch([
+  const [catalogue, facts, agencyList] = await db.batch([
     db
       .select({
         id: services.id,
@@ -147,6 +153,7 @@ export async function answerQuestion(input: AnswerInput): Promise<AnswerResult> 
         name: services.name,
         aliases: services.aliases,
         summary: services.summary,
+        agencyId: services.agencyId,
       })
       .from(services)
       .where(eq(services.isPublished, true)),
@@ -159,9 +166,20 @@ export async function answerQuestion(input: AnswerInput): Promise<AnswerResult> 
       })
       .from(stateFacts)
       .where(eq(stateFacts.isPublished, true)),
+    db
+      .select({
+        id: agencies.id,
+        slug: agencies.slug,
+        name: agencies.name,
+        shortName: agencies.shortName,
+        headTitle: agencies.headTitle,
+        responsibilities: agencies.responsibilities,
+      })
+      .from(agencies)
+      .where(and(eq(agencies.isPublished, true), isNotNull(agencies.slug))),
   ]);
 
-  const route = await routeQuestion(env, question, history, catalogue, facts);
+  const route = await routeQuestion(env, question, history, catalogue, facts, agencyList);
 
   // A greeting is the first thing almost everyone sends. Answering it with
   // "I don't have a confirmed answer" is the worst possible opening, so
@@ -188,6 +206,21 @@ export async function answerQuestion(input: AnswerInput): Promise<AnswerResult> 
         .where(eq(stateFacts.id, hit.id))
         .limit(1);
       if (row) return { text: renderFact(row), resolved: true, tier: 'verified', ...routed };
+    }
+  }
+
+  // Who handles something, who heads an office, how to reach it. The
+  // commonest question a state assistant gets, and the record that goes
+  // stale fastest — every reshuffle changes it — which is why it is
+  // edited in the dashboard rather than shipped in code.
+  if (route.kind === 'agency' && route.agencySlug && route.confidence === 'high') {
+    const hit = agencyList.find((g) => g.slug === route.agencySlug);
+    if (hit) {
+      const [row] = await db.select().from(agencies).where(eq(agencies.id, hit.id)).limit(1);
+      if (row) {
+        const offered = catalogue.filter((s) => s.agencyId === row.id).map((s) => ({ name: s.name }));
+        return { text: renderAgency(row, offered), resolved: true, tier: 'verified', ...routed };
+      }
     }
   }
 
@@ -293,6 +326,13 @@ async function routeQuestion(
   history: Array<{ role: 'user' | 'assistant'; text: string }>,
   catalogue: Array<{ slug: string; name: string; aliases: string[]; summary: string }>,
   facts: Array<{ slug: string; topic: string; aliases: string[] }>,
+  agencyList: Array<{
+    slug: string | null;
+    name: string;
+    shortName: string | null;
+    headTitle: string | null;
+    responsibilities: string | null;
+  }>,
 ): Promise<z.infer<typeof routeSchema>> {
   const catalogueText = catalogue
     .map((s) => `- ${s.slug}: ${s.name}${s.aliases.length ? ` (also: ${s.aliases.join(', ')})` : ''} — ${s.summary}`)
@@ -300,6 +340,15 @@ async function routeQuestion(
 
   const factsText = facts
     .map((f) => `- ${f.slug}: ${f.topic}${f.aliases.length ? ` (also: ${f.aliases.join(', ')})` : ''}`)
+    .join('\n');
+
+  const agenciesText = agencyList
+    .map(
+      (g) =>
+        `- ${g.slug}: ${g.name}${g.shortName ? ` (${g.shortName})` : ''}` +
+        `${g.headTitle ? `, headed by the ${g.headTitle}` : ''}` +
+        `${g.responsibilities ? ` — responsible for: ${g.responsibilities}` : ''}`,
+    )
     .join('\n');
 
   const context = history
@@ -324,6 +373,9 @@ async function routeQuestion(
       'General knowledge available:',
       factsText || '(none published yet)',
       '',
+      'Government offices available:',
+      agenciesText || '(none published yet)',
+      '',
       'Rules:',
       '- Pick kind="greeting" for hello, good morning, thanks, or small talk with no question in it.',
       '- Pick kind="about" ONLY when a fact above answers the question COMPLETELY. Set factSlug.',
@@ -332,6 +384,9 @@ async function routeQuestion(
       '- Open-ended questions — "tell me about X", "what is X known for", "what is X like",',
       '  "describe X", anything wanting a summary rather than one value — are kind="none".',
       '  They are answered better by a web search than by one stored row.',
+      '- Pick kind="agency" when the question asks WHO handles something, who heads an office,',
+      '  which ministry is responsible, or how to contact an office — and an office above covers it.',
+      '  Set agencySlug. A question about HOW to complete a process is a service, not an agency.',
       '- Pick kind="service" only when the question is about one of the catalogued services.',
       '- Pick kind="facility" when the user wants to find a hospital, health centre, pharmacy, police or similar place.',
       '- Pick kind="none" for anything else. A question with no catalogue match is still a real question — mark it "none" and it will be searched on the web, so do not force a bad match.',

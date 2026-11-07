@@ -46,8 +46,15 @@ type ServiceSeed = Omit<typeof services.$inferInsert, 'agencyId'> & { agencyKey:
 const AGENCIES: AgencySeed[] = [
   {
     key: 'iirs',
+    slug: 'iirs',
     name: 'Imo State Internal Revenue Service',
     shortName: 'IIRS',
+    headTitle: 'Executive Chairman',
+    // headName deliberately unset: not published on the agency's site, and
+    // a wrong name is worse than none. Fill it from the dashboard once
+    // confirmed.
+    responsibilities:
+      'Assessment and collection of Imo State taxes and levies, including PAYE, direct assessment for the self-employed, Tax Clearance Certificates, vehicle registration and licensing, and the Land Use Charge.',
     address: '76 Okigwe Road, opposite the Civil Defence Corps, Owerri, Imo State',
     phone: '+234 704 414 3059',
     email: 'enquiries@iirs.im.gov.ng',
@@ -59,8 +66,12 @@ const AGENCIES: AgencySeed[] = [
   },
   {
     key: 'lands',
+    slug: 'ministry-of-lands',
     name: 'Imo State Ministry of Lands, Survey and Urban Planning',
     shortName: 'Ministry of Lands',
+    headTitle: 'Honourable Commissioner',
+    responsibilities:
+      'Land administration in Imo State: Certificates of Occupancy, land titles and searches, survey, and urban planning approvals.',
     // From a property blog, not the ministry. Confirm before the pitch —
     // sending someone to the wrong building is the cheapest way to lose
     // their trust in the whole system.
