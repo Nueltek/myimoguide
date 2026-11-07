@@ -306,6 +306,28 @@ first without the second — verification passes, and no POST is ever sent.
 Meta dashboard → WhatsApp → Configuration → Webhook fields → Manage →
 tick **`messages`**.
 
+**2b. Is the WABA itself subscribed to your app?**
+
+A second, separate subscription layer, and the one the dashboard hides.
+Ticking the `messages` field is app-level; the WhatsApp Business Account
+must *also* be subscribed to the app. Check it directly — use `curl.exe`
+on Windows so PowerShell does not alias it to `Invoke-WebRequest`:
+
+```powershell
+curl.exe -H "Authorization: Bearer <WHATSAPP_TOKEN>" `
+  "https://graph.facebook.com/v23.0/<WABA_ID>/subscribed_apps"
+```
+
+`{"data":[]}` means nothing is subscribed, and no message event will ever
+be sent. Fix it:
+
+```powershell
+curl.exe -X POST -H "Authorization: Bearer <WHATSAPP_TOKEN>" `
+  "https://graph.facebook.com/v23.0/<WABA_ID>/subscribed_apps"
+```
+
+The WABA ID is in the Meta dashboard under WhatsApp → API Setup.
+
 **3. Does Meta think it delivered anything?**
 
 Meta dashboard → Webhooks → recent deliveries. Failed attempts and their

@@ -35,7 +35,17 @@ app.post('/webhook/whatsapp', async (c) => {
     c.req.header('x-hub-signature-256') ?? null,
     c.env.WHATSAPP_APP_SECRET,
   );
-  if (!valid) return c.text('Forbidden', 403);
+  if (!valid) {
+    // Logged loudly on purpose. A silent 403 is indistinguishable in
+    // `wrangler tail` from Meta not sending at all, which costs hours of
+    // debugging the wrong layer. Seeing this line means Meta IS
+    // delivering and WHATSAPP_APP_SECRET does not match the app.
+    console.warn(
+      'webhook: signature rejected — check WHATSAPP_APP_SECRET matches the Meta app',
+      { hasHeader: c.req.header('x-hub-signature-256') !== undefined },
+    );
+    return c.text('Forbidden', 403);
+  }
 
   let body: WhatsAppWebhookBody;
   try {
@@ -53,6 +63,11 @@ app.post('/webhook/whatsapp', async (c) => {
     // message. Failure here means Meta retries, which is the correct
     // outcome — better a duplicate than a dropped question.
     await c.env.INBOUND.sendBatch(jobs.map((body) => ({ body })));
+    console.log(`webhook: enqueued ${jobs.length} message(s)`);
+  } else {
+    // Status callbacks (delivered/read) land here. Worth a line: it
+    // confirms the webhook is wired even before a real question arrives.
+    console.log('webhook: no messages in payload (status callback or unhandled event)');
   }
 
   return c.body(null, 200);
