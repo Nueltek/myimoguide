@@ -73,12 +73,20 @@ async function handleOne(
   const started = Date.now();
   const history = await convo.recent();
 
+  // A web search can take 10-20 seconds. On WhatsApp that silence reads
+  // as broken, so promise an answer before going to look for one. Only
+  // sent when the question is likely to miss the database — a verified
+  // answer returns fast enough not to need it.
+  const notice = maybeHoldingMessage(env, job);
+
   const result = await answerQuestion({
     db,
     env,
     question: job.text,
     history,
   });
+
+  await notice;
 
   await sendText(env, job.from, result.text);
 
@@ -88,6 +96,24 @@ async function handleOne(
   // Logging every question — matched or not — is how the pilot produces the
   // gap list that becomes the pitch.
   await logQuery(db, env, job, result, Date.now() - started);
+}
+
+/**
+ * Fire-and-forget "checking" notice.
+ *
+ * Deliberately crude: anything clever enough to know whether the database
+ * will miss would cost the same query we are trying to get ahead of. A
+ * greeting and a short question are answered instantly; longer questions
+ * are the ones that tend to reach the web.
+ */
+async function maybeHoldingMessage(env: Env, job: InboundJob): Promise<void> {
+  if (job.text.trim().split(/\s+/).length < 4) return;
+  try {
+    await sendText(env, job.from, 'Let me check that for you...');
+  } catch (err) {
+    // Never let the courtesy message cost the user their answer.
+    console.warn('holding message failed', err instanceof Error ? err.message : String(err));
+  }
 }
 
 async function logQuery(
@@ -108,6 +134,7 @@ async function logQuery(
       matchedServiceId: result.serviceId ?? null,
       matchedFacilityId: result.facilityId ?? null,
       wasResolved: result.resolved,
+      answerTier: result.tier,
       answer: result.text,
       latencyMs,
     })

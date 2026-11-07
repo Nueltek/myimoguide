@@ -167,6 +167,70 @@ export function renderFact(fact: StateFact): string {
   return [fact.answer, '', asOf(fact.verifiedAt, fact.confidence, fact.sourceUrl)].join('\n');
 }
 
+/**
+ * Tier 2: an answer assembled from live web sources.
+ *
+ * The framing is doing real work. It must be impossible to mistake this
+ * for a verified record, which is why the hedge comes FIRST, before the
+ * content, and the sources are listed in full.
+ */
+export function renderSourced(
+  answer: string,
+  sources: Array<{ title: string; url: string }>,
+): string {
+  const lines = [
+    "I don't have this confirmed in my records yet, so here is what I found online just now:",
+    '',
+    answer.trim(),
+  ];
+
+  if (sources.length > 0) {
+    lines.push('', '*Sources*');
+    for (const s of sources) lines.push(`• ${s.title}\n${s.url}`);
+  }
+
+  lines.push('', '_Please confirm with the office before you travel or pay anything._');
+
+  return lines.join('\n');
+}
+
+/**
+ * The answer when a question touches money or safety and we have no
+ * verified record.
+ *
+ * Deliberately refuses to fall back to the web. A bank account number
+ * scraped from a search result is a fraud vector — scammers publish and
+ * optimise exactly those pages — and a wrong emergency number is the one
+ * failure that cannot be apologised for afterwards.
+ */
+export function renderNeedsOfficial(
+  kind: 'payment_details' | 'emergency',
+  catalogue: Array<{ name: string }>,
+): string {
+  if (kind === 'emergency') {
+    return [
+      '*If this is an emergency, call 112 now* — it is toll free from any network.',
+      '',
+      'I can give you the address and phone number of hospitals, health centres and police stations I have on record. Tell me which LGA you are in.',
+      '',
+      "I won't pass on an emergency number I have not checked myself.",
+    ].join('\n');
+  }
+
+  const lines = [
+    "I won't give you account or payment details I haven't confirmed with the office.",
+    '',
+    'Fake payment accounts for government services are common, and a wrong number here costs you money. Please get these from the agency directly, or from the official Imo State revenue portal.',
+  ];
+
+  if (catalogue.length > 0) {
+    lines.push('', 'I do have confirmed details for:');
+    for (const s of catalogue) lines.push(`• ${s.name}`);
+  }
+
+  return lines.join('\n');
+}
+
 export function renderUnknown(catalogue: Array<{ name: string }>): string {
   const lines = [
     "I don't have a confirmed answer for that yet, and I would rather tell you than guess.",

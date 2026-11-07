@@ -227,6 +227,14 @@ export const queries = pgTable('queries', {
   matchedFacilityId: uuid('matched_facility_id').references(() => facilities.id, { onDelete: 'set null' }),
   /** False when we fell back to "I don't know, here is who to call". */
   wasResolved: boolean('was_resolved').notNull().default(false),
+  /**
+   * Which tier produced the answer: verified | sourced | withheld | unknown.
+   *
+   * The share each tier carries is the pitch's central number. A high
+   * 'sourced' count is the concrete argument for MDA access: these are
+   * questions people actually ask that only the open web could answer.
+   */
+  answerTier: varchar('answer_tier', { length: 16 }),
 
   answer: text('answer'),
   latencyMs: integer('latency_ms'),

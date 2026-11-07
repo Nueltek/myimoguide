@@ -5,7 +5,16 @@ import { z } from 'zod';
 import type { Env } from '../types';
 import type { Db } from '../db/client';
 import { agencies, facilities, services, stateFacts } from '../db/schema';
-import { renderFact, renderFacilities, renderService, renderUnknown, renderWelcome } from './render';
+import {
+  renderFact,
+  renderFacilities,
+  renderNeedsOfficial,
+  renderService,
+  renderSourced,
+  renderUnknown,
+  renderWelcome,
+} from './render';
+import { searchWeb } from './search';
 
 /**
  * The agent layer, and the single rule it exists to enforce:
@@ -30,9 +39,25 @@ export interface AnswerInput {
   history: Array<{ role: 'user' | 'assistant'; text: string }>;
 }
 
+/**
+ * How an answer was produced. Reported to the user implicitly through the
+ * wording, and logged so the pilot can state what share of questions each
+ * tier carried — which is the number that makes the case for MDA access.
+ */
+export type AnswerTier =
+  /** From a curated row: a named person checked it on a stated date. */
+  | 'verified'
+  /** From a live web search, attributed and explicitly unconfirmed. */
+  | 'sourced'
+  /** Withheld on purpose: money or safety, and no verified record. */
+  | 'withheld'
+  /** Nothing found anywhere. */
+  | 'unknown';
+
 export interface AnswerResult {
   text: string;
   resolved: boolean;
+  tier: AnswerTier;
   serviceId?: string;
   facilityId?: string;
 }
@@ -77,6 +102,13 @@ const routeSchema = z.object({
   confidence: z
     .enum(['high', 'low'])
     .describe('low when you are guessing between options or the question is vague'),
+  sensitivity: z
+    .enum(['routine', 'payment_details', 'emergency'])
+    .describe(
+      'payment_details = asking for a bank account, payment reference or where to send money. ' +
+      'emergency = an urgent medical, fire or security situation happening now. ' +
+      'routine = everything else, including asking what a fee costs.',
+    ),
 });
 
 export async function answerQuestion(input: AnswerInput): Promise<AnswerResult> {
@@ -116,7 +148,7 @@ export async function answerQuestion(input: AnswerInput): Promise<AnswerResult> 
   // "I don't have a confirmed answer" is the worst possible opening, so
   // greetings get a welcome that states what the agent can actually do.
   if (route.kind === 'greeting') {
-    return { text: renderWelcome(catalogue, facts.length > 0), resolved: true };
+    return { text: renderWelcome(catalogue, facts.length > 0), resolved: true, tier: 'verified' };
   }
 
   // General knowledge about the state. An assistant that cannot say when
@@ -130,7 +162,7 @@ export async function answerQuestion(input: AnswerInput): Promise<AnswerResult> 
         .from(stateFacts)
         .where(eq(stateFacts.id, hit.id))
         .limit(1);
-      if (row) return { text: renderFact(row), resolved: true };
+      if (row) return { text: renderFact(row), resolved: true, tier: 'verified' };
     }
   }
 
@@ -148,6 +180,7 @@ export async function answerQuestion(input: AnswerInput): Promise<AnswerResult> 
         return {
           text: renderService(row.services, row.agencies),
           resolved: true,
+          tier: 'verified',
           serviceId: row.services.id,
         };
       }
@@ -170,16 +203,55 @@ export async function answerQuestion(input: AnswerInput): Promise<AnswerResult> 
       return {
         text: renderFacilities(rows, route.facilityType, route.lga),
         resolved: true,
+        tier: 'verified',
         facilityId: first.id,
       };
     }
   }
 
-  // Nothing matched, or the model was unsure. Say so and route the person
-  // to someone who can help. This path is built before coverage is widened
-  // — it is the behaviour that earns trust, and the log of questions that
-  // land here is the most valuable output of the pilot.
-  return { text: renderUnknown(catalogue), resolved: false };
+  // ---------------------------------------------------------------
+  // Nothing in the database. Everything below is Tier 2 and lower.
+  // ---------------------------------------------------------------
+
+  // Two classes never fall through to the web, however useful it would be.
+  //
+  // Payment details: scammers publish and search-optimise fake government
+  // account numbers precisely because systems like this one might repeat
+  // them. Repeating one would move real money to a thief.
+  //
+  // Emergencies: an unchecked number that rings out is the single failure
+  // here that cannot be undone with an apology.
+  if (route.sensitivity === 'payment_details' || route.sensitivity === 'emergency') {
+    return {
+      text: renderNeedsOfficial(route.sensitivity, catalogue),
+      resolved: false,
+      tier: 'withheld',
+    };
+  }
+
+  // Federal matters belong to GovGuide, not to us. Searching the web for
+  // them would blur the state-level positioning the product rests on.
+  if (isFederal(question)) {
+    return { text: renderUnknown(catalogue), resolved: false, tier: 'unknown' };
+  }
+
+  // Tier 2: search the live web and attribute every claim.
+  const web = await searchWeb(env, question, history);
+  if (web.found) {
+    return { text: renderSourced(web.text, web.sources), resolved: true, tier: 'sourced' };
+  }
+
+  // Tier 3: found nothing. Say so and name someone who can help. The log
+  // of questions that land here is the most valuable output of the pilot
+  // — it is the evidence for what MDA access would buy.
+  return { text: renderUnknown(catalogue), resolved: false, tier: 'unknown' };
+}
+
+/** Federal services we deliberately do not cover. */
+function isFederal(question: string): boolean {
+  return /\b(nin|nimc|passport|immigration|jamb|waec|neco|cac|corporate affairs|bvn|npc|inec)\b/i.test(
+    question,
+  );
 }
 
 async function routeQuestion(
@@ -226,7 +298,9 @@ async function routeQuestion(
       '- Pick kind="about" when the question is general knowledge about Imo State and matches a fact above. Set factSlug.',
       '- Pick kind="service" only when the question is about one of the catalogued services.',
       '- Pick kind="facility" when the user wants to find a hospital, health centre, pharmacy, police or similar place.',
-      '- Pick kind="none" for anything else, including federal matters (NIN, passport, JAMB, CAC).',
+      '- Pick kind="none" for anything else. A question with no catalogue match is still a real question — mark it "none" and it will be searched on the web, so do not force a bad match.',
+      '- Federal matters (NIN, passport, JAMB, CAC) are out of scope: kind="none".',
+      '- Set sensitivity carefully. It decides whether an unverified answer is allowed at all.',
       '- Set confidence="low" if you are guessing between two services or the question is too vague.',
       '- Only set lga when the user named a place that maps to one.',
     ].join('\n'),

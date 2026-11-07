@@ -15,6 +15,13 @@
       "when": 1794060044671,
       "tag": "0001_state_facts",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794062784954,
+      "tag": "0002_answer_tier",
+      "breakpoints": true
     }
   ]
 }

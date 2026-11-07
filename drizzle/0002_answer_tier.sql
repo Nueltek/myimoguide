@@ -1,0 +1,1 @@
+ALTER TABLE "queries" ADD COLUMN "answer_tier" varchar(16);
