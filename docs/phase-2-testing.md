@@ -274,6 +274,60 @@ The moment the project becomes real.
 
 ---
 
+## Troubleshooting: messages arrive but `wrangler tail` shows nothing
+
+The single most common Phase 2 failure. Work down this list in order; each
+step rules out a layer.
+
+**Read the ticks first.** The consumer calls `markRead`, so a working
+pipeline turns WhatsApp's ticks blue within a second or two.
+
+| What you see | What it means |
+| --- | --- |
+| Grey double ticks, nothing in `tail` | No request reached the Worker. Meta is not sending. |
+| Blue ticks, nothing in `tail` | `tail` is attached to the wrong Worker or expired. Restart it. |
+| Blue ticks, errors in `tail` | The Worker ran. A real bug — read the stack trace. |
+
+**1. Is the Worker alive?**
+
+```powershell
+curl https://myimoguide.<your-subdomain>.workers.dev/health
+```
+
+Expect `{"ok":true,"service":"myimoguide"}`. If this fails, the deploy is
+the problem, not Meta.
+
+**2. Is the `messages` field subscribed?**
+
+The usual culprit. Saving and verifying the callback URL is a *separate
+step* from subscribing to events, and the dashboard lets you complete the
+first without the second — verification passes, and no POST is ever sent.
+
+Meta dashboard → WhatsApp → Configuration → Webhook fields → Manage →
+tick **`messages`**.
+
+**3. Does Meta think it delivered anything?**
+
+Meta dashboard → Webhooks → recent deliveries. Failed attempts and their
+response codes are listed there. An empty list confirms step 2 is the
+cause. A list of 403s means the signature check is rejecting them — the
+`WHATSAPP_APP_SECRET` secret does not match the app.
+
+**4. Did Cloudflare see a request at all?**
+
+Cloudflare dashboard → Workers → myimoguide → Metrics. Requests at zero
+while Meta reports deliveries means the callback URL points somewhere
+else — check for a typo, a missing `/webhook/whatsapp` path, or an old
+subdomain.
+
+**5. Is `tail` attached to the right Worker?**
+
+`npx wrangler tail` prints `Connected to <name>`. It must say
+`myimoguide`. Tails expire after a few hours — restart it if the session
+has been open a long time.
+
+---
+
 ## Phase 2 sign-off
 
 - [ ] All five spikes pass, or each failure has a workaround written above
