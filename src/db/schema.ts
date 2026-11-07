@@ -235,6 +235,13 @@ export const queries = pgTable('queries', {
    * questions people actually ask that only the open web could answer.
    */
   answerTier: varchar('answer_tier', { length: 16 }),
+  /**
+   * Which provider and model answered. Stored per query, not read from
+   * config at report time, because config changes — an A/B run is
+   * worthless if last week's rows silently claim today's provider.
+   */
+  provider: varchar('provider', { length: 16 }),
+  model: varchar('model', { length: 64 }),
 
   answer: text('answer'),
   latencyMs: integer('latency_ms'),

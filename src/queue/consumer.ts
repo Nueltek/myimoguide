@@ -2,6 +2,7 @@ import type { Env, InboundJob } from '../types';
 import { createDb } from '../db/client';
 import { markRead, sendText } from '../whatsapp/client';
 import { answerQuestion } from '../agent/answer';
+import { activeConfig } from '../agent/models';
 
 /**
  * Where the slow work happens, off the webhook's critical path.
@@ -63,6 +64,26 @@ async function handleOne(
 
   await markRead(env, job.messageId);
 
+  // Diagnostic command. The person testing this is holding a phone, not
+  // sitting at a terminal, and "which provider answered that?" is not a
+  // question they should have to infer from latency or wording.
+  if (job.text.trim().toLowerCase() === '/status') {
+    const cfg = activeConfig(env);
+    await sendText(
+      env,
+      job.from,
+      [
+        '*MyImoGuide status*',
+        '',
+        `Provider: *${cfg.provider}*`,
+        `Routing model: ${cfg.routingModel}`,
+        `Synthesis model: ${cfg.synthesisModel}`,
+        `API key present: ${cfg.keyPresent ? 'yes' : 'NO — calls will fail'}`,
+      ].join('\n'),
+    );
+    return;
+  }
+
   // Voice notes are table stakes on WhatsApp in Nigeria. Transcription is
   // wired in Phase 3, step 7 — until then, say so rather than fail silently.
   if (job.kind === 'audio') {
@@ -87,6 +108,12 @@ async function handleOne(
   });
 
   await notice;
+
+  // One line per answered question, so `wrangler tail` shows the tier and
+  // the model that produced it without digging.
+  console.log(
+    `answered: tier=${result.tier} provider=${result.provider} model=${result.model}`,
+  );
 
   await sendText(env, job.from, result.text);
 
@@ -135,6 +162,8 @@ async function logQuery(
       matchedFacilityId: result.facilityId ?? null,
       wasResolved: result.resolved,
       answerTier: result.tier,
+      provider: result.provider,
+      model: result.model,
       answer: result.text,
       latencyMs,
     })

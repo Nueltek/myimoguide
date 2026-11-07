@@ -15,7 +15,13 @@ import {
   renderWelcome,
 } from './render';
 import { searchWeb } from './search';
-import { routingModel } from './models';
+import {
+  type ModelProvider,
+  providerOf,
+  routingModel,
+  routingModelId,
+  synthesisModelId,
+} from './models';
 
 /**
  * The agent layer, and the single rule it exists to enforce:
@@ -61,6 +67,9 @@ export interface AnswerResult {
   text: string;
   resolved: boolean;
   tier: AnswerTier;
+  /** Which provider and model produced this. Logged and stored per query. */
+  provider: ModelProvider;
+  model: string;
   serviceId?: string;
   facilityId?: string;
 }
@@ -117,6 +126,13 @@ const routeSchema = z.object({
 export async function answerQuestion(input: AnswerInput): Promise<AnswerResult> {
   const { db, env, question, history } = input;
 
+  // Stamped on every answer below, so a reply can always be traced to the
+  // provider and model that produced it — including from the phone, via
+  // the /status command, without opening a terminal.
+  const provider = providerOf(env);
+  const routed = { provider, model: routingModelId(env) };
+  const synthesised = { provider, model: synthesisModelId(env) };
+
   // Both catalogues in ONE batch — neon-http sends it as a single request,
   // so this costs one subrequest rather than two against the 50 cap.
   //
@@ -151,13 +167,19 @@ export async function answerQuestion(input: AnswerInput): Promise<AnswerResult> 
   // "I don't have a confirmed answer" is the worst possible opening, so
   // greetings get a welcome that states what the agent can actually do.
   if (route.kind === 'greeting') {
-    return { text: renderWelcome(catalogue, facts.length > 0), resolved: true, tier: 'verified' };
+    return { text: renderWelcome(catalogue, facts.length > 0), resolved: true, tier: 'verified', ...routed };
   }
 
   // General knowledge about the state. An assistant that cannot say when
   // Imo State was created has no business calling itself a state guide,
   // and it is the first thing anyone tests.
-  if (route.kind === 'about' && route.factSlug) {
+  //
+  // The confidence gate matters as much as the match. A stored fact is a
+  // narrow answer to a narrow question, and a near-miss is worse than no
+  // match at all: "what is Imo known FOR" once returned the nickname
+  // row — "known AS the Eastern Heartland" — which answers a different
+  // question and blocks the richer web answer the user wanted.
+  if (route.kind === 'about' && route.factSlug && route.confidence === 'high') {
     const hit = facts.find((f) => f.slug === route.factSlug);
     if (hit) {
       const [row] = await db
@@ -165,7 +187,7 @@ export async function answerQuestion(input: AnswerInput): Promise<AnswerResult> 
         .from(stateFacts)
         .where(eq(stateFacts.id, hit.id))
         .limit(1);
-      if (row) return { text: renderFact(row), resolved: true, tier: 'verified' };
+      if (row) return { text: renderFact(row), resolved: true, tier: 'verified', ...routed };
     }
   }
 
@@ -184,6 +206,7 @@ export async function answerQuestion(input: AnswerInput): Promise<AnswerResult> 
           text: renderService(row.services, row.agencies),
           resolved: true,
           tier: 'verified',
+          ...routed,
           serviceId: row.services.id,
         };
       }
@@ -207,6 +230,7 @@ export async function answerQuestion(input: AnswerInput): Promise<AnswerResult> 
         text: renderFacilities(rows, route.facilityType, route.lga),
         resolved: true,
         tier: 'verified',
+        ...routed,
         facilityId: first.id,
       };
     }
@@ -229,30 +253,31 @@ export async function answerQuestion(input: AnswerInput): Promise<AnswerResult> 
       text: renderNeedsOfficial(route.sensitivity, catalogue),
       resolved: false,
       tier: 'withheld',
+      ...routed,
     };
   }
 
   // Federal matters belong to GovGuide, not to us. Searching the web for
   // them would blur the state-level positioning the product rests on.
   if (isFederal(question)) {
-    return { text: renderUnknown(catalogue), resolved: false, tier: 'unknown' };
+    return { text: renderUnknown(catalogue), resolved: false, tier: 'unknown', ...routed };
   }
 
   // Tier 2: search the live web and attribute every claim.
   const web = await searchWeb(env, question, history);
   if (web.found) {
-    return { text: renderSourced(web.text, web.sources), resolved: true, tier: 'sourced' };
+    return { text: renderSourced(web.text, web.sources), resolved: true, tier: 'sourced', ...synthesised };
   }
 
   // The search broke. Say that, rather than claiming no answer exists.
   if (web.error) {
-    return { text: renderSearchBroken(), resolved: false, tier: 'error' };
+    return { text: renderSearchBroken(), resolved: false, tier: 'error', ...synthesised };
   }
 
   // Tier 3: found nothing. Say so and name someone who can help. The log
   // of questions that land here is the most valuable output of the pilot
   // — it is the evidence for what MDA access would buy.
-  return { text: renderUnknown(catalogue), resolved: false, tier: 'unknown' };
+  return { text: renderUnknown(catalogue), resolved: false, tier: 'unknown', ...synthesised };
 }
 
 /** Federal services we deliberately do not cover. */
@@ -301,7 +326,12 @@ async function routeQuestion(
       '',
       'Rules:',
       '- Pick kind="greeting" for hello, good morning, thanks, or small talk with no question in it.',
-      '- Pick kind="about" when the question is general knowledge about Imo State and matches a fact above. Set factSlug.',
+      '- Pick kind="about" ONLY when a fact above answers the question COMPLETELY. Set factSlug.',
+      '  A fact that answers a nearby but different question does not count. "What is Imo known FOR"',
+      '  is not answered by the fact about what it is known AS. When in doubt, set confidence="low".',
+      '- Open-ended questions — "tell me about X", "what is X known for", "what is X like",',
+      '  "describe X", anything wanting a summary rather than one value — are kind="none".',
+      '  They are answered better by a web search than by one stored row.',
       '- Pick kind="service" only when the question is about one of the catalogued services.',
       '- Pick kind="facility" when the user wants to find a hospital, health centre, pharmacy, police or similar place.',
       '- Pick kind="none" for anything else. A question with no catalogue match is still a real question — mark it "none" and it will be searched on the web, so do not force a bad match.',
