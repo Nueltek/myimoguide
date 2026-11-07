@@ -254,6 +254,30 @@ export const queries = pgTable('queries', {
   index('queries_unresolved_idx').on(t.wasResolved, t.createdAt),
 ]);
 
+/**
+ * Dashboard sessions.
+ *
+ * Server-side, so revocation is immediate — a stolen cookie is killed by
+ * deleting a row, which a signed stateless token cannot offer. On a
+ * government system the ability to cut off access now matters more than
+ * saving a database read.
+ *
+ * The cookie carries a random id; only its SHA-256 is stored, so a
+ * database leak does not hand over live sessions.
+ */
+export const adminSessions = pgTable('admin_sessions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id').notNull().references(() => adminUsers.id, { onDelete: 'cascade' }),
+  tokenHash: varchar('token_hash', { length: 64 }).notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  ipAddress: varchar('ip_address', { length: 45 }),
+  userAgent: text('user_agent'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex('admin_sessions_token_idx').on(t.tokenHash),
+  index('admin_sessions_expiry_idx').on(t.expiresAt),
+]);
+
 /** Dashboard users. Government project: 2FA is mandatory, not optional. */
 export const adminUsers = pgTable('admin_users', {
   id: uuid('id').primaryKey().defaultRandom(),

@@ -15,7 +15,10 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:studio": "drizzle-kit studio",
-    "db:seed:facts": "tsx scripts/seed-facts.ts"
+    "db:seed:facts": "tsx scripts/seed-facts.ts",
+    "db:seed:services": "tsx scripts/seed-services.ts",
+    "db:seed": "npm run db:seed:facts && npm run db:seed:services",
+    "admin:create": "tsx scripts/create-admin.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.97",

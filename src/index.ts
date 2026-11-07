@@ -4,6 +4,7 @@ import type { WhatsAppWebhookBody } from './whatsapp/types';
 import { isValidSignature, verificationChallenge } from './whatsapp/verify';
 import { handleBatch } from './queue/consumer';
 import { activeConfig } from './agent/models';
+import { admin } from './admin/routes';
 
 export { Conversation } from './conversation';
 
@@ -74,6 +75,10 @@ app.post('/webhook/whatsapp', async (c) => {
 
   return c.body(null, 200);
 });
+
+// The dashboard. Auth is enforced by middleware inside, so a page added
+// later is protected by default rather than by remembering to protect it.
+app.route('/admin', admin);
 
 app.notFound((c) => c.text('Not found', 404));
 

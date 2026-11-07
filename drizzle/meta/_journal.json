@@ -29,6 +29,13 @@
       "when": 1794067207512,
       "tag": "0003_query_provenance",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1794069876989,
+      "tag": "0004_admin_sessions",
+      "breakpoints": true
     }
   ]
 }
