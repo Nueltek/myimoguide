@@ -5,7 +5,7 @@ import { z } from 'zod';
 import type { Env } from '../types';
 import type { Db } from '../db/client';
 import { agencies, facilities, services } from '../db/schema';
-import { renderFacilities, renderService, renderUnknown } from './render';
+import { renderFacilities, renderService, renderUnknown, renderWelcome } from './render';
 
 /**
  * The agent layer, and the single rule it exists to enforce:
@@ -52,8 +52,11 @@ const FACILITY_TYPES = [
 
 const routeSchema = z.object({
   kind: z
-    .enum(['service', 'facility', 'none'])
-    .describe('service = a government process; facility = find a place; none = neither'),
+    .enum(['greeting', 'service', 'facility', 'none'])
+    .describe(
+      'greeting = hello/thanks/small talk with no question; service = a government process; ' +
+      'facility = find a place; none = a real question we cannot route',
+    ),
   serviceSlug: z
     .string()
     .nullable()
@@ -89,6 +92,13 @@ export async function answerQuestion(input: AnswerInput): Promise<AnswerResult> 
     .where(eq(services.isPublished, true));
 
   const route = await routeQuestion(env, question, history, catalogue);
+
+  // A greeting is the first thing almost everyone sends. Answering it with
+  // "I don't have a confirmed answer" is the worst possible opening, so
+  // greetings get a welcome that states what the agent can actually do.
+  if (route.kind === 'greeting') {
+    return { text: renderWelcome(catalogue), resolved: true };
+  }
 
   if (route.kind === 'service' && route.serviceSlug && route.confidence === 'high') {
     const match = catalogue.find((s) => s.slug === route.serviceSlug);
@@ -170,6 +180,7 @@ async function routeQuestion(
       catalogueText || '(none published yet)',
       '',
       'Rules:',
+      '- Pick kind="greeting" for hello, good morning, thanks, or small talk with no question in it.',
       '- Pick kind="service" only when the question is about one of the catalogued services.',
       '- Pick kind="facility" when the user wants to find a hospital, health centre, pharmacy, police or similar place.',
       '- Pick kind="none" for anything else, including federal matters (NIN, passport, JAMB, CAC).',

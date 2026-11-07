@@ -121,6 +121,32 @@ export function renderFacilities(
   return lines.join('\n').trim();
 }
 
+/**
+ * The reply to "Hi" — the first message almost every user sends.
+ *
+ * It must never be a non-answer. Stating the covered ground up front also
+ * steers the next question toward something answerable, which lifts the
+ * resolution rate the pilot is measured on.
+ */
+export function renderWelcome(catalogue: Array<{ name: string }>): string {
+  const lines = ['Welcome to *MyImoGuide*.', ''];
+
+  if (catalogue.length > 0) {
+    lines.push('Ask me about any of these and I will give you the current details:', '');
+    for (const s of catalogue) lines.push(`• ${s.name}`);
+    lines.push('', 'I can also find hospitals, health centres and police stations by LGA.');
+  } else {
+    lines.push('I can help you find hospitals, health centres and police stations across Imo State.');
+  }
+
+  lines.push(
+    '',
+    'Every answer I give comes from a verified record and carries the date it was checked. If I am not sure, I will say so rather than guess.',
+  );
+
+  return lines.join('\n');
+}
+
 export function renderUnknown(catalogue: Array<{ name: string }>): string {
   const lines = [
     "I don't have a confirmed answer for that yet, and I would rather tell you than guess.",

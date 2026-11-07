@@ -308,10 +308,31 @@ tick **`messages`**.
 
 **2b. Is the WABA itself subscribed to your app?**
 
-A second, separate subscription layer, and the one the dashboard hides.
-Ticking the `messages` field is app-level; the WhatsApp Business Account
-must *also* be subscribed to the app. Check it directly — use `curl.exe`
-on Windows so PowerShell does not alias it to `Invoke-WebRequest`:
+**The most likely cause, and the one that costs hours.** Two separate
+things share the word "webhook":
+
+| | What it does | Where |
+| --- | --- | --- |
+| Callback URL + verify token | tells Meta *where* to deliver | app-level |
+| WABA subscription | tells Meta *which account's events* to send | per app + WABA pair |
+
+Verification passing only proves the first. With the second missing you
+have a correct delivery address and nothing feeding it: the GET handshake
+succeeds and no POST is ever sent.
+
+**Fastest fix — the dashboard toggle.** WhatsApp → Production setup →
+Register your WhatsApp phone number. Each messaging account card has a
+**Subscribe webhooks** toggle. Turn it on for this app's account. The
+"Messaging Account ID" printed on that card *is* the WABA ID.
+
+Note the subscription is per app **and** WABA. Another WABA of yours
+working elsewhere is subscribed to *its own* app, and will correctly show
+as unsubscribed here. An app with a single WABA is often subscribed
+automatically during guided setup; with two or more, Meta cannot guess
+and subscribes neither.
+
+**Equivalent via the API** — use `curl.exe` on Windows so PowerShell does
+not alias it to `Invoke-WebRequest`:
 
 ```powershell
 curl.exe -H "Authorization: Bearer <WHATSAPP_TOKEN>" `
