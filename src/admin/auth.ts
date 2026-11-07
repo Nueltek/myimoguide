@@ -15,10 +15,19 @@ import { adminSessions, adminUsers } from '../db/schema';
  * runtime rather than in JS, and is an accepted choice when argon2 and
  * scrypt are unavailable.
  *
- * ITERATION_COUNT is below OWASP's 600,000 for PBKDF2-SHA256, and that
- * is a deliberate, stated trade-off against the Workers CPU ceiling
- * rather than an oversight. It is compensated by a strict minimum
- * password length, mandatory TOTP, and login rate limiting.
+ * ITERATION_COUNT IS PINNED TO 100,000 BY THE PLATFORM, NOT BY CHOICE.
+ *
+ * Cloudflare's production runtime refuses PBKDF2 above 100,000
+ * iterations — the call fails outright rather than downgrading. Local
+ * workerd (wrangler dev) does NOT enforce this, so a higher count passes
+ * every local test and then 500s on the first real login. That exact
+ * failure shipped here: hashes were written at 150,000 by a script
+ * running in Node, and production could never verify them.
+ *
+ * 100,000 is below OWASP's 600,000 for PBKDF2-SHA256. That is the
+ * platform ceiling, stated rather than hidden, and it is compensated by
+ * a 14-character minimum password and, for production, by putting
+ * Cloudflare Access in front of /admin.
  *
  * FOR PRODUCTION, put Cloudflare Access in front of /admin instead. It
  * is free for up to 50 users, gives real SSO and MFA, logs every access
@@ -27,7 +36,9 @@ import { adminSessions, adminUsers } from '../db/schema';
  * login. It needs a custom domain, which is why this exists for now.
  */
 
-const ITERATION_COUNT = 150_000;
+/** Cloudflare's production cap. Do not raise — see the note above. */
+export const MAX_PLATFORM_ITERATIONS = 100_000;
+const ITERATION_COUNT = MAX_PLATFORM_ITERATIONS;
 const SALT_BYTES = 16;
 const KEY_BITS = 256;
 const SESSION_HOURS = 8;
@@ -70,6 +81,17 @@ export async function verifyPassword(password: string, stored: string): Promise<
 
   const iterations = Number.parseInt(iterStr, 10);
   if (!Number.isFinite(iterations) || iterations < 1000) return false;
+
+  // A hash above the platform cap can never be verified here; asking
+  // workerd to try throws, which surfaced as a bare 500 on the login
+  // page. Fail closed, and say exactly what to do about it.
+  if (iterations > MAX_PLATFORM_ITERATIONS) {
+    console.error(
+      `login: stored hash uses ${iterations} PBKDF2 iterations; Cloudflare caps at ` +
+        `${MAX_PLATFORM_ITERATIONS}. Reset this account: npx tsx scripts/create-admin.ts <email>`,
+    );
+    return false;
+  }
 
   const actual = await derive(password, fromHex(saltHex), iterations);
 

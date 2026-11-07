@@ -1,5 +1,6 @@
 import { DurableObject } from 'cloudflare:workers';
 import type { Env } from './types';
+import { type ClaimState, decideClaim } from './dedupe';
 
 interface Turn {
   role: 'user' | 'assistant';
@@ -36,6 +37,15 @@ export class Conversation extends DurableObject<Env> {
         at INTEGER NOT NULL
       );
     `);
+
+    // Instances created before the two-state fix have a `seen` table with
+    // no status column. Add it; existing rows default to 'done', which is
+    // correct — they finished, or are too old to be retried anyway.
+    try {
+      this.sql.exec(`ALTER TABLE seen ADD COLUMN status TEXT NOT NULL DEFAULT 'done'`);
+    } catch {
+      // Column already exists.
+    }
   }
 
   /**
@@ -45,16 +55,36 @@ export class Conversation extends DurableObject<Env> {
    * itself is at-least-once. Without this the user gets the same answer
    * twice, which looks broken in a live demo.
    */
-  async claimMessage(messageId: string): Promise<boolean> {
-    const existing = this.sql
-      .exec('SELECT 1 FROM seen WHERE message_id = ?', messageId)
-      .toArray();
-    if (existing.length > 0) return false;
+  async claimMessage(messageId: string, attempt: number): Promise<boolean> {
+    const row = this.sql
+      .exec('SELECT status FROM seen WHERE message_id = ?', messageId)
+      .toArray()[0];
+    const state = (row?.status as ClaimState) ?? undefined;
 
-    this.sql.exec('INSERT INTO seen (message_id, at) VALUES (?, ?)', messageId, Date.now());
+    // See src/dedupe.ts for why attempt matters. The short version: the
+    // original claimed a message as finished before doing any work, so
+    // every retry was mistaken for a duplicate and silently dropped.
+    if (decideClaim(state, attempt) === 'skip') return false;
+
+    this.sql.exec(
+      `INSERT INTO seen (message_id, at, status) VALUES (?, ?, 'processing')
+       ON CONFLICT(message_id) DO UPDATE SET at = excluded.at, status = 'processing'`,
+      messageId,
+      Date.now(),
+    );
     // Keep the table small; ids older than a day cannot still be retried.
     this.sql.exec('DELETE FROM seen WHERE at < ?', Date.now() - 86_400_000);
     return true;
+  }
+
+  /** Called only once a reply has actually been delivered. */
+  async markDone(messageId: string): Promise<void> {
+    this.sql.exec(`UPDATE seen SET status = 'done' WHERE message_id = ?`, messageId);
+  }
+
+  async isDone(messageId: string): Promise<boolean> {
+    const row = this.sql.exec('SELECT status FROM seen WHERE message_id = ?', messageId).toArray()[0];
+    return row?.status === 'done';
   }
 
   /** Sliding window. Returns false when the user is over the limit. */

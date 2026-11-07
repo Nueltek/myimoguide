@@ -22,13 +22,22 @@
 		"consumers": [
 			{
 				"queue": "myimoguide-inbound",
-				// Small batches on the free plan: 10k queue operations/day total,
-				// roughly 3 ops per message. Keep max_batch_size low so one slow
-				// message cannot drag a whole batch past the CPU ceiling.
-				"max_batch_size": 5,
-				"max_batch_timeout": 5,
+				// One message per invocation. If an invocation is killed, only
+				// that message is lost to the retry, not four innocent ones in
+				// the same batch. Queue operations are counted per message, so
+				// this costs nothing against the free plan's daily allowance.
+				"max_batch_size": 1,
+				"max_batch_timeout": 1,
 				"max_retries": 3,
 				"dead_letter_queue": "myimoguide-inbound-dlq"
+			},
+			{
+				// The backstop. Messages land here only when every attempt
+				// failed without delivering a reply; its handler sends a short
+				// apology so a user is never left with silence.
+				"queue": "myimoguide-inbound-dlq",
+				"max_batch_size": 1,
+				"max_retries": 2
 			}
 		]
 	},

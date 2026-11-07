@@ -22,7 +22,7 @@ import { Hono } from 'hono';
 import { readFileSync, readdirSync } from 'node:fs';
 import { admin } from '../src/admin/routes';
 import { adminUsers } from '../src/db/schema';
-import { hashPassword } from '../src/admin/auth';
+import { MAX_PLATFORM_ITERATIONS, hashPassword } from '../src/admin/auth';
 
 const pg = await PGlite.create();
 // vector unavailable in pglite; the intents table is skipped below.
@@ -43,7 +43,20 @@ const db = drizzle(pg as never) as never;
 
 const email = 'test@nueltek.dev';
 const password = 'anchor-basalt-cobalt-4821';
-await (db as any).insert(adminUsers).values({ email, passwordHash: await hashPassword(password), role: 'admin' });
+const passwordHash = await hashPassword(password);
+
+// Guard against the bug that shipped once: hashes written above
+// Cloudflare's production PBKDF2 cap verify fine here in Node, then fail
+// on every real login. Local workerd does not enforce the cap either, so
+// this assertion is the only thing that catches it before production.
+const iterations = Number(passwordHash.split('$')[1]);
+if (!(iterations <= MAX_PLATFORM_ITERATIONS)) {
+  console.error(`FAIL: hash uses ${iterations} iterations; Cloudflare production caps at ${MAX_PLATFORM_ITERATIONS}`);
+  process.exit(1);
+}
+console.log(`hash iterations: ${iterations} (cap ${MAX_PLATFORM_ITERATIONS}) ok`);
+
+await (db as any).insert(adminUsers).values({ email, passwordHash, role: 'admin' });
 console.log('\nadmin user created');
 
 const app = new Hono<any>();
@@ -52,6 +65,8 @@ app.route('/admin', admin);
 app.onError((err, c) => {
   console.log('\n*** THREW ***');
   console.log((err as Error).stack ?? String(err));
+  // Any unhandled error in a route is a failed test, not a printed line.
+  process.exitCode = 1;
   return c.text('error', 500);
 });
 
@@ -81,4 +96,9 @@ if (cookie) {
   console.log('\n--- GET /admin/services ---');
   r = await app.request('/admin/services', { headers: { cookie: token! } }, env);
   console.log('status', r.status);
+  if (r.status !== 200) process.exit(1);
+} else {
+  console.error('FAIL: login did not set a session cookie');
+  process.exit(1);
 }
+console.log('\ne2e passed');

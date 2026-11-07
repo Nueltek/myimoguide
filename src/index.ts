@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import type { Env, InboundJob } from './types';
 import type { WhatsAppWebhookBody } from './whatsapp/types';
 import { isValidSignature, verificationChallenge } from './whatsapp/verify';
-import { handleBatch } from './queue/consumer';
+import { handleBatch, handleDeadLetter } from './queue/consumer';
 import { activeConfig } from './agent/models';
 import { admin } from './admin/routes';
 import { createDb } from './db/client';
@@ -243,5 +243,7 @@ function extractJobs(body: WhatsAppWebhookBody): InboundJob[] {
 
 export default {
   fetch: app.fetch,
-  queue: handleBatch,
+  // One Worker consumes both queues; route on which one delivered the batch.
+  queue: (batch, env) =>
+    batch.queue === 'myimoguide-inbound-dlq' ? handleDeadLetter(batch, env) : handleBatch(batch, env),
 } satisfies ExportedHandler<Env, InboundJob>;

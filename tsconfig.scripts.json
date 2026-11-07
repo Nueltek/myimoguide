@@ -1,0 +1,12 @@
+{
+  // Scripts and tests run in Node, not workerd, so they get Node types.
+  // They also import src/ — which references workerd globals such as
+  // Queue and DurableObjectNamespace — so both type sets are loaded here.
+  // The Worker itself (tsconfig.json) never sees Node types, which keeps
+  // a Node-only API from typechecking in code that will run on workerd.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["@cloudflare/workers-types", "node"]
+  },
+  "include": ["scripts/**/*.ts", "src/**/*.ts", "src/**/*.tsx", "drizzle.config.ts"]
+}

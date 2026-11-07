@@ -15,7 +15,16 @@ import { activeConfig } from '../agent/models';
  * database round trip reused rather than several. Phase 2 spike 1 measures
  * whether this holds for a consumer; see spikes/README.md.
  */
-/** Must match max_retries in wrangler.jsonc. */
+/**
+ * Apologise and stop on this attempt.
+ *
+ * Deliberately one less than the queue's total deliveries: max_retries 3
+ * in wrangler.jsonc allows four. A thrown error is caught here and
+ * answered on the third. The fourth delivery exists only for the case
+ * this catch cannot see — an invocation killed outright on the third —
+ * and if that fails too, the message reaches the dead-letter handler,
+ * which apologises from outside the failing isolate.
+ */
 const MAX_ATTEMPTS = 3;
 
 /**
@@ -37,7 +46,7 @@ export async function handleBatch(
   // within one invocation and is the quickest way to hit the 50 cap.
   for (const message of batch.messages) {
     try {
-      await handleOne(message.body, env, db);
+      await handleOne(message.body, env, db, message.attempts);
       message.ack();
     } catch (err) {
       console.error('consumer failed', {
@@ -64,18 +73,34 @@ export async function handleBatch(
   }
 }
 
+type ConvoStub = ReturnType<Env['CONVERSATION']['get']>;
+
 async function handleOne(
   job: InboundJob,
   env: Env,
   db: ReturnType<typeof createDb>,
+  attempt: number,
 ): Promise<void> {
   const convo = env.CONVERSATION.get(env.CONVERSATION.idFromName(job.from));
 
-  // At-least-once delivery plus Meta's own retries means duplicates are
-  // normal, not exceptional.
-  const isNew = await convo.claimMessage(job.messageId);
-  if (!isNew) return;
+  // Duplicates are normal: Meta re-delivers slow webhooks, and the queue
+  // retries failures. The claim tells those two apart — see src/dedupe.ts
+  // for the bug that conflating them caused.
+  if (!(await convo.claimMessage(job.messageId, attempt))) return;
 
+  // respond() throws on failure, leaving the message 'processing' so the
+  // queue's retry is allowed through. It returns only once a reply has
+  // actually been sent — and only then is the message finished.
+  await respond(job, env, db, convo);
+  await convo.markDone(job.messageId);
+}
+
+async function respond(
+  job: InboundJob,
+  env: Env,
+  db: ReturnType<typeof createDb>,
+  convo: ConvoStub,
+): Promise<void> {
   if (!(await convo.allow())) {
     await sendText(env, job.from, 'You have sent a lot of messages just now. Please try again in a few minutes.');
     return;
@@ -241,3 +266,46 @@ async function hashUser(phone: string, salt: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', data);
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
+
+/**
+ * Consumer for the dead-letter queue: the backstop that lives OUTSIDE the
+ * isolate that failed.
+ *
+ * Every other safety net in this file runs inside the same invocation as
+ * the work. If that invocation is killed outright — a CPU overrun leaves
+ * no catch to run and no timer to fire — none of them execute, and after
+ * the last retry the message lands here. This handler does almost
+ * nothing, so it cannot fail the same way: one Durable Object read, one
+ * WhatsApp send. No database, no model.
+ */
+export async function handleDeadLetter(
+  batch: MessageBatch<InboundJob>,
+  env: Env,
+): Promise<void> {
+  for (const message of batch.messages) {
+    const job = message.body;
+    try {
+      const convo = env.CONVERSATION.get(env.CONVERSATION.idFromName(job.from));
+      // Answered after all, just before the isolate died. Say nothing.
+      if (await convo.isDone(job.messageId)) {
+        message.ack();
+        continue;
+      }
+      console.error('dead-letter: no reply was delivered', { messageId: job.messageId });
+      await sendText(
+        env,
+        job.from,
+        "I'm sorry — I wasn't able to answer your last message. The fault is on my side, not with your question.\n\nPlease send it again in a few minutes.",
+      );
+      await convo.markDone(job.messageId);
+      message.ack();
+    } catch (err) {
+      console.error('dead-letter handler failed', {
+        messageId: job.messageId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      message.retry();
+    }
+  }
+}
+

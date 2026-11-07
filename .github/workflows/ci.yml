@@ -37,10 +37,11 @@ jobs:
       - name: Bundle size against the free-plan ceiling
         run: node scripts/check-bundle-size.mjs
 
-      # Runs the real admin routes against a real Postgres. Catches the
-      # class of bug that reading the code three times did not.
-      - name: Admin routes end to end
-        run: npm run test:e2e
+      # The dedupe proof (the silent-reply bug, reproduced then fixed) and
+      # the admin routes run against a real Postgres, including the guard
+      # on Cloudflare's PBKDF2 cap that local workerd does not enforce.
+      - name: Tests
+        run: npm test
 
       - name: Verify migrations are committed
         run: |
