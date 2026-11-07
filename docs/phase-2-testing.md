@@ -114,11 +114,17 @@ npx wrangler r2 bucket create myimoguide-sources
 CREATE EXTENSION IF NOT EXISTS vector;
 ```
 
+Dependencies must be installed first — `drizzle-kit` lives in
+`node_modules`, and without it these commands fail with "not recognized as
+an internal or external command". If you skipped step 0.1, run `npm ci` now.
+
+The initial migration (`drizzle/0000_init.sql`) is already committed, so
+there is nothing to generate. Apply it:
+
 **PowerShell (Windows).**
 
 ```powershell
 $env:DATABASE_URL = 'postgresql://...'
-npm run db:generate
 npm run db:migrate
 ```
 
@@ -126,9 +132,12 @@ npm run db:migrate
 
 ```bash
 export DATABASE_URL='postgresql://...'
-npm run db:generate
 npm run db:migrate
 ```
+
+Only run `npm run db:generate` after you change `src/db/schema.ts` — it
+writes a new migration file, which must then be committed (CI fails if the
+schema and the migrations disagree).
 
 - [ ] `vector` extension installed
 - [ ] Migration applied; tables visible in Neon

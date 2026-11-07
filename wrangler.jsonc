@@ -1,75 +1,78 @@
 {
-  "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "myimoguide",
-  "main": "src/index.ts",
-  "compatibility_date": "2026-11-06",
-  "compatibility_flags": ["nodejs_compat"],
-
-  "observability": {
-    "enabled": true,
-    "head_sampling_rate": 1
-  },
-
-  // Producer: the webhook enqueues here and returns 200 immediately.
-  // Consumer: the same Worker drains it and does the slow LLM work.
-  "queues": {
-    "producers": [
-      {
-        "queue": "myimoguide-inbound",
-        "binding": "INBOUND"
-      }
-    ],
-    "consumers": [
-      {
-        "queue": "myimoguide-inbound",
-        // Small batches on the free plan: 10k queue operations/day total,
-        // roughly 3 ops per message. Keep max_batch_size low so one slow
-        // message cannot drag a whole batch past the CPU ceiling.
-        "max_batch_size": 5,
-        "max_batch_timeout": 5,
-        "max_retries": 3,
-        "dead_letter_queue": "myimoguide-inbound-dlq"
-      }
-    ]
-  },
-
-  // Per-conversation state: SQLite-backed Durable Objects are on the free
-  // plan; the KV-backed ones are not. Do not change the class without a
-  // matching migration entry.
-  "durable_objects": {
-    "bindings": [
-      {
-        "name": "CONVERSATION",
-        "class_name": "Conversation"
-      }
-    ]
-  },
-  "migrations": [
-    {
-      "tag": "v1",
-      "new_sqlite_classes": ["Conversation"]
-    }
-  ],
-
-  // Source documents behind each verified record (gazette PDFs, fee
-  // schedules) so the dashboard can show provenance.
-  "r2_buckets": [
-    {
-      "binding": "SOURCES",
-      "bucket_name": "myimoguide-sources"
-    }
-  ],
-
-  "vars": {
-    "WHATSAPP_API_VERSION": "v23.0",
-    "LOG_LEVEL": "info"
-  }
-
-  // Secrets (never in this file — `wrangler secret put <NAME>`):
-  //   WHATSAPP_VERIFY_TOKEN   random string, also pasted into Meta's webhook config
-  //   WHATSAPP_APP_SECRET     Meta app secret, used for X-Hub-Signature-256
-  //   WHATSAPP_TOKEN          System User token (permanent, not the 60-min one)
-  //   WHATSAPP_PHONE_ID       phone number ID (not the phone number)
-  //   ANTHROPIC_API_KEY
-  //   DATABASE_URL            Neon pooled connection string
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "myimoguide",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-11-06",
+	"compatibility_flags": [
+		"nodejs_compat"
+	],
+	"observability": {
+		"enabled": true,
+		"head_sampling_rate": 1
+	},
+	// Producer: the webhook enqueues here and returns 200 immediately.
+	// Consumer: the same Worker drains it and does the slow LLM work.
+	"queues": {
+		"producers": [
+			{
+				"queue": "myimoguide-inbound",
+				"binding": "INBOUND"
+			}
+		],
+		"consumers": [
+			{
+				"queue": "myimoguide-inbound",
+				// Small batches on the free plan: 10k queue operations/day total,
+				// roughly 3 ops per message. Keep max_batch_size low so one slow
+				// message cannot drag a whole batch past the CPU ceiling.
+				"max_batch_size": 5,
+				"max_batch_timeout": 5,
+				"max_retries": 3,
+				"dead_letter_queue": "myimoguide-inbound-dlq"
+			}
+		]
+	},
+	// Per-conversation state: SQLite-backed Durable Objects are on the free
+	// plan; the KV-backed ones are not. Do not change the class without a
+	// matching migration entry.
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "CONVERSATION",
+				"class_name": "Conversation"
+			}
+		]
+	},
+	"migrations": [
+		{
+			"tag": "v1",
+			"new_sqlite_classes": [
+				"Conversation"
+			]
+		}
+	],
+	// Source documents behind each verified record (gazette PDFs, fee
+	// schedules) so the dashboard can show provenance.
+	"r2_buckets": [
+		{
+			"binding": "SOURCES",
+			"bucket_name": "myimoguide-sources"
+		},
+		{
+			"bucket_name": "myimoguide-sources",
+			"binding": "myimoguide_sources",
+			"remote": true
+		}
+	],
+	"vars": {
+		"WHATSAPP_API_VERSION": "v23.0",
+		"LOG_LEVEL": "info"
+	}
+	// Secrets (never in this file — `wrangler secret put <NAME>`):
+	//   WHATSAPP_VERIFY_TOKEN   random string, also pasted into Meta's webhook config
+	//   WHATSAPP_APP_SECRET     Meta app secret, used for X-Hub-Signature-256
+	//   WHATSAPP_TOKEN          System User token (permanent, not the 60-min one)
+	//   WHATSAPP_PHONE_ID       phone number ID (not the phone number)
+	//   ANTHROPIC_API_KEY
+	//   DATABASE_URL            Neon pooled connection string
 }
