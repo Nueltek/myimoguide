@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.97",
+    "@ai-sdk/openai": "^4.0.110",
     "@neondatabase/serverless": "^1.2.0",
     "ai": "^7.0.163",
     "drizzle-orm": "^0.45.4",

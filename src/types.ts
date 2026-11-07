@@ -14,6 +14,8 @@ export interface Env {
 
   // Plain vars
   WHATSAPP_API_VERSION: string;
+  /** "anthropic" (default) or "openai". The only switch needed to swap. */
+  MODEL_PROVIDER?: 'anthropic' | 'openai';
   LOG_LEVEL: 'debug' | 'info' | 'warn' | 'error';
 
   // Secrets
@@ -22,6 +24,8 @@ export interface Env {
   WHATSAPP_TOKEN: string;
   WHATSAPP_PHONE_ID: string;
   ANTHROPIC_API_KEY: string;
+  /** Only required when MODEL_PROVIDER is "openai". */
+  OPENAI_API_KEY: string;
   DATABASE_URL: string;
 }
 

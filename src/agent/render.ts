@@ -231,6 +231,21 @@ export function renderNeedsOfficial(
   return lines.join('\n');
 }
 
+/**
+ * Shown when the search broke, as distinct from finding nothing.
+ *
+ * Honest about which of the two happened. The user is not misled into
+ * believing the information does not exist, and the wording is distinct
+ * enough in the logs and in a tester's screenshot to spot an outage.
+ */
+export function renderSearchBroken(): string {
+  return [
+    "Something went wrong on my side while looking that up — this isn't a case of the answer not existing.",
+    '',
+    'Please try again in a moment. If it keeps happening, the problem is mine to fix, not yours.',
+  ].join('\n');
+}
+
 export function renderUnknown(catalogue: Array<{ name: string }>): string {
   const lines = [
     "I don't have a confirmed answer for that yet, and I would rather tell you than guess.",

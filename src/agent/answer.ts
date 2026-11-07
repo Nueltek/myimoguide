@@ -1,4 +1,3 @@
-import { createAnthropic } from '@ai-sdk/anthropic';
 import { generateObject } from 'ai';
 import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
@@ -10,11 +9,13 @@ import {
   renderFacilities,
   renderNeedsOfficial,
   renderService,
+  renderSearchBroken,
   renderSourced,
   renderUnknown,
   renderWelcome,
 } from './render';
 import { searchWeb } from './search';
+import { routingModel } from './models';
 
 /**
  * The agent layer, and the single rule it exists to enforce:
@@ -52,7 +53,9 @@ export type AnswerTier =
   /** Withheld on purpose: money or safety, and no verified record. */
   | 'withheld'
   /** Nothing found anywhere. */
-  | 'unknown';
+  | 'unknown'
+  /** The search itself failed. Our fault, not an absence of information. */
+  | 'error';
 
 export interface AnswerResult {
   text: string;
@@ -241,6 +244,11 @@ export async function answerQuestion(input: AnswerInput): Promise<AnswerResult> 
     return { text: renderSourced(web.text, web.sources), resolved: true, tier: 'sourced' };
   }
 
+  // The search broke. Say that, rather than claiming no answer exists.
+  if (web.error) {
+    return { text: renderSearchBroken(), resolved: false, tier: 'error' };
+  }
+
   // Tier 3: found nothing. Say so and name someone who can help. The log
   // of questions that land here is the most valuable output of the pilot
   // — it is the evidence for what MDA access would buy.
@@ -261,8 +269,6 @@ async function routeQuestion(
   catalogue: Array<{ slug: string; name: string; aliases: string[]; summary: string }>,
   facts: Array<{ slug: string; topic: string; aliases: string[] }>,
 ): Promise<z.infer<typeof routeSchema>> {
-  const anthropic = createAnthropic({ apiKey: env.ANTHROPIC_API_KEY });
-
   const catalogueText = catalogue
     .map((s) => `- ${s.slug}: ${s.name}${s.aliases.length ? ` (also: ${s.aliases.join(', ')})` : ''} — ${s.summary}`)
     .join('\n');
@@ -277,9 +283,9 @@ async function routeQuestion(
     .join('\n');
 
   const { object } = await generateObject({
-    // Routing is a small classification job; a fast model is the right
-    // choice and keeps the per-query cost in fractions of a cent.
-    model: anthropic('claude-haiku-4-5'),
+    // Routing is a small classification job; the cheapest adequate model
+    // is right, and it runs on every single message. See models.ts.
+    model: routingModel(env),
     schema: routeSchema,
     // AI SDK 7: `instructions`, not `system`. A { role: 'system' } entry in
     // messages is rejected by default in v7.

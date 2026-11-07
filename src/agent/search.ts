@@ -1,6 +1,6 @@
-import { createAnthropic } from '@ai-sdk/anthropic';
 import { generateText } from 'ai';
 import type { Env } from '../types';
+import { synthesisModel, webSearchTool } from './models';
 
 /**
  * Tier 2: answer from the live web, with every claim attributed.
@@ -25,8 +25,18 @@ import type { Env } from '../types';
 export interface SearchResult {
   text: string;
   sources: Array<{ title: string; url: string }>;
-  /** False when the search came back with nothing usable. */
+  /** True when we have an attributed answer to show. */
   found: boolean;
+  /**
+   * Set when the search itself broke rather than simply finding nothing.
+   *
+   * These are different events and must not look the same to the user.
+   * "I have no confirmed answer" is a statement about the world; a failed
+   * API call is a statement about us. Reporting the second as the first
+   * is a lie, and it hides the outage — which is exactly what happened
+   * the first time this shipped.
+   */
+  error?: string;
 }
 
 /**
@@ -44,22 +54,6 @@ export async function searchWeb(
   question: string,
   history: Array<{ role: 'user' | 'assistant'; text: string }>,
 ): Promise<SearchResult> {
-  const anthropic = createAnthropic({ apiKey: env.ANTHROPIC_API_KEY });
-
-  const webSearch = anthropic.tools.webSearch_20260318({
-    // Cost ceiling per question, and a latency ceiling too.
-    maxUses: 3,
-    ...(ALLOWED_DOMAINS.length > 0 ? { allowedDomains: ALLOWED_DOMAINS } : {}),
-    // Biases results toward Nigerian and Imo-specific pages.
-    userLocation: {
-      type: 'approximate',
-      country: 'NG',
-      region: 'Imo',
-      city: 'Owerri',
-      timezone: 'Africa/Lagos',
-    },
-  });
-
   const context = history
     .slice(-4)
     .map((t) => `${t.role === 'user' ? 'User' : 'Assistant'}: ${t.text}`)
@@ -67,8 +61,8 @@ export async function searchWeb(
 
   try {
     const result = await generateText({
-      model: anthropic('claude-sonnet-5-5'),
-      tools: { web_search: webSearch },
+      model: synthesisModel(env),
+      tools: webSearchTool(env),
       instructions: [
         'You answer questions about Imo State, Nigeria for residents and visitors, on WhatsApp.',
         '',
@@ -115,8 +109,17 @@ export async function searchWeb(
       found: text.length > 0 && unique.length > 0,
     };
   } catch (err) {
-    console.warn('web search failed', err instanceof Error ? err.message : String(err));
-    return { text: '', sources: [], found: false };
+    const message = err instanceof Error ? err.message : String(err);
+    // Loud, and carried back to the caller. A swallowed search failure
+    // that renders as "no confirmed answer" is indistinguishable from
+    // working correctly, which is how a dead integration stays dead.
+    console.error('web search FAILED', {
+      message,
+      hint:
+        'Common causes: web search not enabled in the provider console; ' +
+        'bad or missing API key; model id not available to this account.',
+    });
+    return { text: '', sources: [], found: false, error: message };
   }
 }
 
