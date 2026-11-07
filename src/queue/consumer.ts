@@ -67,7 +67,13 @@ async function handleOne(
   // Diagnostic command. The person testing this is holding a phone, not
   // sitting at a terminal, and "which provider answered that?" is not a
   // question they should have to infer from latency or wording.
-  if (job.text.trim().toLowerCase() === '/status') {
+  //
+  // Restricted to ADMIN_NUMBERS. Which model powers the assistant is not
+  // the public's business: in a government setting it invites "so it is
+  // just ChatGPT with extra steps", a conversation about plumbing rather
+  // than about verified data. A non-admin sending /status falls through
+  // to normal handling, so the command does not announce its existence.
+  if (job.text.trim().toLowerCase() === '/status' && isAdmin(env, job.from)) {
     const cfg = activeConfig(env);
     await sendText(
       env,
@@ -123,6 +129,12 @@ async function handleOne(
   // Logging every question — matched or not — is how the pilot produces the
   // gap list that becomes the pitch.
   await logQuery(db, env, job, result, Date.now() - started);
+}
+
+/** Is this sender allowed to run diagnostic commands? */
+function isAdmin(env: Env, from: string): boolean {
+  const list = env.ADMIN_NUMBERS?.split(',').map((n) => n.trim().replace(/^\+/, '')) ?? [];
+  return list.length > 0 && list.includes(from.replace(/^\+/, ''));
 }
 
 /**

@@ -20,6 +20,11 @@ export interface Env {
   ROUTING_MODEL?: string;
   SYNTHESIS_MODEL?: string;
   LOG_LEVEL: 'debug' | 'info' | 'warn' | 'error';
+  /**
+   * Comma-separated E.164 numbers (no plus) allowed to run diagnostic
+   * commands such as /status. Empty disables them for everyone.
+   */
+  ADMIN_NUMBERS?: string;
 
   // Secrets
   WHATSAPP_VERIFY_TOKEN: string;
