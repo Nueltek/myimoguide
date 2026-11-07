@@ -14,8 +14,11 @@ export interface Env {
 
   // Plain vars
   WHATSAPP_API_VERSION: string;
-  /** "anthropic" (default) or "openai". The only switch needed to swap. */
+  /** "anthropic" (default) or "openai". See src/agent/models.ts. */
   MODEL_PROVIDER?: 'anthropic' | 'openai';
+  /** Optional model overrides; blank uses the provider's default. */
+  ROUTING_MODEL?: string;
+  SYNTHESIS_MODEL?: string;
   LOG_LEVEL: 'debug' | 'info' | 'warn' | 'error';
 
   // Secrets

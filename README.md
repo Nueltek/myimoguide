@@ -30,6 +30,22 @@ Everything runs on free tiers. The only recurring cost is LLM credits.
 | Storage | R2 | source documents behind each record |
 | Models | Vercel AI SDK v7 | 3 MB gzipped Worker ceiling rules out LangChain |
 
+## Provider and model switching
+
+Anthropic and OpenAI are both wired. Switching is configuration, not code:
+
+```powershell
+npx wrangler secret put MODEL_PROVIDER    # anthropic | openai
+npx wrangler secret put OPENAI_API_KEY    # only for openai
+npx wrangler deploy
+```
+
+`GET /health` reports the live provider and model ids so a switch can be
+verified. Routing and synthesis models are set independently, and both
+can be overridden with `ROUTING_MODEL` / `SYNTHESIS_MODEL`.
+
+Full detail, costs and gotchas: [docs/switching-providers.md](docs/switching-providers.md).
+
 ## Layout
 
 ```

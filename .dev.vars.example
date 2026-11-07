@@ -5,3 +5,9 @@ WHATSAPP_TOKEN="System User token — permanent, not the 60-minute temp one"
 WHATSAPP_PHONE_ID="phone number ID, not the phone number itself"
 ANTHROPIC_API_KEY="sk-ant-..."
 DATABASE_URL="postgresql://user:pass@ep-xxx.neon.tech/neondb?sslmode=require"
+
+# Optional. Omit for Anthropic defaults.
+# MODEL_PROVIDER="openai"
+# OPENAI_API_KEY="sk-..."
+# ROUTING_MODEL="gpt-6-luna"
+# SYNTHESIS_MODEL="gpt-6.1-terra"

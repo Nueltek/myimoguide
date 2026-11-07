@@ -3,12 +3,20 @@ import type { Env, InboundJob } from './types';
 import type { WhatsAppWebhookBody } from './whatsapp/types';
 import { isValidSignature, verificationChallenge } from './whatsapp/verify';
 import { handleBatch } from './queue/consumer';
+import { activeConfig } from './agent/models';
 
 export { Conversation } from './conversation';
 
 const app = new Hono<{ Bindings: Env }>();
 
-app.get('/health', (c) => c.json({ ok: true, service: 'myimoguide' }));
+/**
+ * Reports which provider and models are live, so a provider switch can be
+ * confirmed from outside rather than assumed. Never exposes a key — only
+ * whether one is present.
+ */
+app.get('/health', (c) =>
+  c.json({ ok: true, service: 'myimoguide', ...activeConfig(c.env) }),
+);
 
 /** Meta's one-time handshake when the webhook URL is saved. */
 app.get('/webhook/whatsapp', (c) => {
@@ -36,10 +44,6 @@ app.post('/webhook/whatsapp', async (c) => {
     c.env.WHATSAPP_APP_SECRET,
   );
   if (!valid) {
-    // Logged loudly on purpose. A silent 403 is indistinguishable in
-    // `wrangler tail` from Meta not sending at all, which costs hours of
-    // debugging the wrong layer. Seeing this line means Meta IS
-    // delivering and WHATSAPP_APP_SECRET does not match the app.
     console.warn(
       'webhook: signature rejected — check WHATSAPP_APP_SECRET matches the Meta app',
       { hasHeader: c.req.header('x-hub-signature-256') !== undefined },
@@ -65,8 +69,6 @@ app.post('/webhook/whatsapp', async (c) => {
     await c.env.INBOUND.sendBatch(jobs.map((body) => ({ body })));
     console.log(`webhook: enqueued ${jobs.length} message(s)`);
   } else {
-    // Status callbacks (delivered/read) land here. Worth a line: it
-    // confirms the webhook is wired even before a real question arrives.
     console.log('webhook: no messages in payload (status callback or unhandled event)');
   }
 
