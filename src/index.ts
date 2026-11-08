@@ -5,6 +5,7 @@ import { isValidSignature, verificationChallenge } from './whatsapp/verify';
 import { handleBatch, handleDeadLetter } from './queue/consumer';
 import { activeConfig } from './agent/models';
 import { admin } from './admin/routes';
+import { loadKey } from './admin/secretbox';
 import { createDb } from './db/client';
 import { sql } from 'drizzle-orm';
 
@@ -48,7 +49,16 @@ app.get('/health', async (c) => {
     database = { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 
-  return c.json({ ok: database.ok, ...base, database }, database.ok ? 200 : 503);
+  // The dashboard cannot sign anyone in without the 2FA key. Reported
+  // separately: the WhatsApp service is still healthy without it.
+  let twoFactorKey: 'ok' | 'missing' | 'invalid' = 'ok';
+  try {
+    await loadKey(c.env.TOTP_ENCRYPTION_KEY);
+  } catch {
+    twoFactorKey = c.env.TOTP_ENCRYPTION_KEY ? 'invalid' : 'missing';
+  }
+
+  return c.json({ ok: database.ok, ...base, database, dashboard: { twoFactorKey } }, database.ok ? 200 : 503);
 });
 
 /** Meta's one-time handshake when the webhook URL is saved. */

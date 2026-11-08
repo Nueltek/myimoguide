@@ -2,9 +2,23 @@ import type { Context } from 'hono';
 import type { Env } from '../types';
 import type { Db } from '../db/client';
 import { auditLog } from '../db/schema';
-import type { SessionUser } from './auth';
+import type { ResolvedSession, SessionUser } from './auth';
 
-export type Ctx = { Bindings: Env; Variables: { db: Db; user: SessionUser } };
+export type Ctx = {
+  Bindings: Env;
+  Variables: { db: Db; user: SessionUser; session: ResolvedSession };
+};
+
+/** Every action the audit log records. A closed list, so a typo cannot invent one. */
+export type AuditAction =
+  | 'create'
+  | 'update'
+  | 'login'
+  | 'logout'
+  | 'twofa_enabled'
+  | 'twofa_failed'
+  | 'twofa_locked'
+  | 'recovery_code_used';
 
 /**
  * Append-only audit entry. Never updated, never deleted.
@@ -15,7 +29,7 @@ export type Ctx = { Bindings: Env; Variables: { db: Db; user: SessionUser } };
  */
 export async function audit(
   c: Context<Ctx>,
-  action: 'create' | 'update' | 'login',
+  action: AuditAction,
   table: string,
   rowId: string | null,
   before: unknown,

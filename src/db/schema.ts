@@ -289,6 +289,18 @@ export const adminSessions = pgTable('admin_sessions', {
   id: uuid('id').primaryKey().defaultRandom(),
   userId: uuid('user_id').notNull().references(() => adminUsers.id, { onDelete: 'cascade' }),
   tokenHash: varchar('token_hash', { length: 64 }).notNull(),
+  /**
+   * How far through sign-in this session is.
+   *   enrolling — password correct, no 2FA set up yet: may only reach setup
+   *   pending   — password correct, 2FA code not yet given: may only reach the code page
+   *   full      — both factors given
+   * Partial sessions live ten minutes. Moving to full issues a new token
+   * rather than upgrading this one, so a token seen during sign-in is
+   * worthless afterwards.
+   */
+  stage: varchar('stage', { length: 16 }).notNull().default('full'),
+  /** Wrong 2FA codes on this session. Five ends it. */
+  failedAttempts: integer('failed_attempts').notNull().default(0),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
   ipAddress: varchar('ip_address', { length: 45 }),
   userAgent: text('user_agent'),
@@ -304,8 +316,19 @@ export const adminUsers = pgTable('admin_users', {
   email: varchar('email', { length: 160 }).notNull(),
   /** argon2id. Never bcrypt, never a fast hash. */
   passwordHash: text('password_hash').notNull(),
+  /** Sealed with AES-GCM; see src/admin/secretbox.ts. Never stored in plain text. */
   totpSecret: text('totp_secret'),
   totpEnabledAt: timestamp('totp_enabled_at', { withTimezone: true }),
+  /**
+   * Secret shown during setup, before the user proves they scanned it.
+   * Kept separate so reloading the setup page shows the same QR code
+   * rather than invalidating the one already in their app.
+   */
+  totpPendingSecret: text('totp_pending_secret'),
+  /** Last time step accepted. Codes at or before it are replays. */
+  totpLastStep: integer('totp_last_step'),
+  /** SHA-256 of each unused recovery code. A used code is removed. */
+  recoveryCodeHashes: text('recovery_code_hashes').array().notNull().default([]),
   role: varchar('role', { length: 16 }).notNull().default('editor'),
   isActive: boolean('is_active').notNull().default(true),
   lastLoginAt: timestamp('last_login_at', { withTimezone: true }),
@@ -328,7 +351,12 @@ export const auditLog = pgTable('audit_log', {
   after: jsonb('after'),
   ipAddress: varchar('ip_address', { length: 45 }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-}, (t) => [index('audit_log_row_idx').on(t.tableName, t.rowId, t.createdAt)]);
+}, (t) => [
+  index('audit_log_row_idx').on(t.tableName, t.rowId, t.createdAt),
+  // Sign-in throttling counts recent failures by account and by address.
+  index('audit_log_action_actor_idx').on(t.action, t.actorEmail, t.createdAt),
+  index('audit_log_action_ip_idx').on(t.action, t.ipAddress, t.createdAt),
+]);
 
 export type Service = typeof services.$inferSelect;
 export type Facility = typeof facilities.$inferSelect;

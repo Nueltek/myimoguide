@@ -43,6 +43,13 @@
       "when": 1794094884773,
       "tag": "0005_agency_profile",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1794096627127,
+      "tag": "0006_two_factor",
+      "breakpoints": true
     }
   ]
 }

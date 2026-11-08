@@ -167,14 +167,40 @@ form[aria-busy="true"] input,form[aria-busy="true"] textarea,form[aria-busy="tru
   border:1px solid transparent}
 .flash.ok{background:var(--green-50);color:var(--green-700);border-color:#CBE5D8}
 .flash.bad{background:var(--red-50);color:var(--red-600);border-color:#F6CFCB}
+.flash.warn{background:#FFF8E6;color:#6B4A00;border-color:#F0DCA8}
 
 .empty{padding:40px 20px;text-align:center;color:var(--ink-500);font-size:13.5px}
 
 .login{min-height:100vh;display:grid;place-items:center;background:var(--canvas);padding:20px}
-.login-card{width:100%;max-width:368px;background:var(--surface);border:1px solid var(--line);
+.login-card{width:100%;max-width:380px;background:var(--surface);border:1px solid var(--line);
   border-radius:8px;box-shadow:var(--shadow);padding:30px;
   animation:rise 260ms cubic-bezier(.2,0,.2,1)}
 @keyframes rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.login-card.wide{max-width:520px}
+.auth-head{display:flex;align-items:center;gap:10px;margin-bottom:22px}
+.auth-step{font-size:11.5px;color:var(--ink-500);font-weight:500;text-transform:uppercase;letter-spacing:.06em}
+.auth-foot{font-size:12px;color:var(--ink-500);margin:18px 0 0;line-height:1.5}
+.auth-title{font-size:17px;margin:0 0 6px}
+.auth-lede{font-size:13.5px;color:var(--ink-500);margin:0 0 18px;line-height:1.55}
+.steps-list{margin:0 0 18px;padding:0;list-style:none;counter-reset:s}
+.steps-list li{counter-increment:s;position:relative;padding-left:30px;margin-bottom:14px;font-size:13.5px;line-height:1.5}
+.steps-list li::before{content:counter(s);position:absolute;left:0;top:0;width:20px;height:20px;border-radius:50%;
+  background:var(--green-50);color:var(--green-700);font-size:11.5px;font-weight:600;display:grid;place-items:center}
+.qr{display:block;width:176px;height:176px;margin:10px 0 12px;padding:8px;background:#fff;
+  border:1px solid var(--line);border-radius:var(--radius)}
+.qr svg{display:block;width:100%;height:100%}
+.secret{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:14px;letter-spacing:.06em;
+  background:var(--canvas);border:1px solid var(--line);border-radius:var(--radius);padding:8px 10px;
+  display:inline-block;user-select:all;word-break:break-all}
+.code-input{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:20px!important;
+  letter-spacing:.3em;text-align:center;padding:10px!important}
+.codes{display:grid;grid-template-columns:1fr 1fr;gap:8px 18px;margin:0 0 16px;padding:14px 16px;
+  background:var(--canvas);border:1px solid var(--line);border-radius:var(--radius);
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:14.5px;letter-spacing:.05em}
+.warn-box{background:var(--amber-50);border:1px solid #F2E3BC;border-radius:var(--radius);
+  padding:10px 12px;font-size:13px;color:#6B4A00;margin-bottom:16px;line-height:1.5}
+.btn-row{display:flex;gap:8px;flex-wrap:wrap}
+@media print{.login{background:#fff}.login-card{box-shadow:none;border:0}.btn-row,.no-print{display:none}}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 
 @media (max-width:820px){
@@ -358,64 +384,80 @@ export const Shell: FC<PropsWithChildren<{ title: string; path: string; email: s
   </html>
 );
 
-export const LoginPage: FC<{ error?: string }> = ({ error }) => (
+/**
+ * Centred card for the sign-in steps: password, 2FA setup, 2FA code,
+ * recovery codes. No sidebar — whoever is looking at these is not signed
+ * in yet, and the navigation would only lead back here.
+ */
+export const AuthCard: FC<PropsWithChildren<{ title: string; wide?: boolean; step?: string }>> = ({
+  title,
+  wide,
+  step,
+  children,
+}) => (
   <html lang="en">
     <head>
       <meta charset="utf-8" />
       <meta name="viewport" content="width=device-width, initial-scale=1" />
       <meta name="robots" content="noindex, nofollow" />
-      <title>Sign in · MyImoGuide</title>
+      <title>{title} · MyImoGuide</title>
       <style>{raw(CSS)}</style>
     </head>
     <body>
       <div class="login">
-        <div class="login-card">
-          <div style="display:flex;align-items:center;gap:10px;margin-bottom:22px">
+        <div class={`login-card${wide ? ' wide' : ''}`}>
+          <div class="auth-head">
             <div class="brand-mark">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 {raw(PATHS.message)}
               </svg>
             </div>
-            <div>
+            <div style="flex:1">
               <div style="font-weight:600;font-size:15px;letter-spacing:-.01em">MyImoGuide</div>
               <div style="font-size:12px;color:var(--ink-500)">Administration</div>
             </div>
+            {step ? <div class="auth-step">{step}</div> : null}
           </div>
-
-          {error ? (
-            <div class="flash bad">
-              <Icon name="alert" /> {error}
-            </div>
-          ) : null}
-
-          <form method="post" action="/admin/login">
-            <div class="field">
-              <label for="email">Email</label>
-              <input id="email" name="email" type="email" required autocomplete="username" autofocus />
-            </div>
-            <div class="field">
-              <label for="password">Password</label>
-              <input id="password" name="password" type="password" required autocomplete="current-password" />
-            </div>
-            <button
-              class="btn primary"
-              type="submit"
-              data-busy-label="Signing in..."
-              style="width:100%;justify-content:center"
-            >
-              <Icon name="lock" />
-              Sign in
-            </button>
-          </form>
-
-          <p style="font-size:12px;color:var(--ink-500);margin:18px 0 0;line-height:1.5">
-            Authorised personnel only. Sign-in attempts are logged.
-          </p>
+          {children}
         </div>
       </div>
       <script>{raw(SUBMIT_JS)}</script>
     </body>
   </html>
+);
+
+export const LoginPage: FC<{ error?: string | undefined; notice?: string | undefined }> = ({ error, notice }) => (
+  <AuthCard title="Sign in">
+    {error ? (
+      <div class="flash bad" role="alert">
+        <Icon name="alert" /> {error}
+      </div>
+    ) : null}
+    {notice ? (
+      <div class="flash ok" role="status">
+        <Icon name="check" /> {notice}
+      </div>
+    ) : null}
+
+    <form method="post" action="/admin/login">
+      <div class="field">
+        <label for="email">Email</label>
+        <input id="email" name="email" type="email" required autocomplete="username" autofocus />
+      </div>
+      <div class="field">
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" required autocomplete="current-password" />
+      </div>
+      <button class="btn primary" type="submit" data-busy-label="Signing in..." style="width:100%;justify-content:center">
+        <Icon name="lock" />
+        Sign in
+      </button>
+    </form>
+
+    <p class="auth-foot">
+      Authorised personnel only. Every sign-in attempt, successful or not, is recorded in the audit log.
+    </p>
+  </AuthCard>
 );
 
 /** Confidence rendered consistently everywhere it appears. */

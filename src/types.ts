@@ -35,6 +35,11 @@ export interface Env {
   /** Only required when MODEL_PROVIDER is "openai". */
   OPENAI_API_KEY: string;
   DATABASE_URL: string;
+  /**
+   * 32 random bytes, base64. Encrypts 2FA secrets at rest. Without it
+   * nobody can sign in to the dashboard. See src/admin/secretbox.ts.
+   */
+  TOTP_ENCRYPTION_KEY?: string;
 }
 
 /**

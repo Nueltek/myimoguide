@@ -1,4 +1,4 @@
-import { and, eq, gt } from 'drizzle-orm';
+import { and, eq, gt, sql } from 'drizzle-orm';
 import type { Db } from '../db/client';
 import { adminSessions, adminUsers } from '../db/schema';
 
@@ -112,6 +112,20 @@ export interface SessionUser {
   role: string;
 }
 
+export type SessionStage = 'enrolling' | 'pending' | 'full';
+
+export interface ResolvedSession {
+  user: SessionUser;
+  sessionId: string;
+  stage: SessionStage;
+  failedAttempts: number;
+  /** False until the user has confirmed an authenticator app. */
+  totpEnabled: boolean;
+}
+
+/** A partial session exists only to finish signing in. */
+const PARTIAL_SESSION_MINUTES = 10;
+
 /**
  * Issues a session. Returns the raw token for the cookie; only its hash
  * is persisted, so a database leak yields no usable sessions.
@@ -120,13 +134,16 @@ export async function createSession(
   db: Db,
   userId: string,
   meta: { ip?: string | undefined; userAgent?: string | undefined },
+  stage: SessionStage = 'full',
 ): Promise<{ token: string; expiresAt: Date }> {
   const token = toHex(crypto.getRandomValues(new Uint8Array(32)).buffer);
-  const expiresAt = new Date(Date.now() + SESSION_HOURS * 3_600_000);
+  const ttl = stage === 'full' ? SESSION_HOURS * 3_600_000 : PARTIAL_SESSION_MINUTES * 60_000;
+  const expiresAt = new Date(Date.now() + ttl);
 
   await db.insert(adminSessions).values({
     userId,
     tokenHash: await sha256Hex(token),
+    stage,
     expiresAt,
     ipAddress: meta.ip ?? null,
     userAgent: meta.userAgent?.slice(0, 500) ?? null,
@@ -135,11 +152,20 @@ export async function createSession(
   return { token, expiresAt };
 }
 
-export async function resolveSession(db: Db, token: string | undefined): Promise<SessionUser | null> {
+export async function resolveSession(db: Db, token: string | undefined): Promise<ResolvedSession | null> {
   if (!token) return null;
 
   const rows = await db
-    .select({ id: adminUsers.id, email: adminUsers.email, role: adminUsers.role, active: adminUsers.isActive })
+    .select({
+      id: adminUsers.id,
+      email: adminUsers.email,
+      role: adminUsers.role,
+      active: adminUsers.isActive,
+      totpEnabledAt: adminUsers.totpEnabledAt,
+      sessionId: adminSessions.id,
+      stage: adminSessions.stage,
+      failedAttempts: adminSessions.failedAttempts,
+    })
     .from(adminSessions)
     .innerJoin(adminUsers, eq(adminSessions.userId, adminUsers.id))
     .where(and(eq(adminSessions.tokenHash, await sha256Hex(token)), gt(adminSessions.expiresAt, new Date())))
@@ -147,7 +173,46 @@ export async function resolveSession(db: Db, token: string | undefined): Promise
 
   const row = rows[0];
   if (!row || !row.active) return null;
-  return { id: row.id, email: row.email, role: row.role };
+  return {
+    user: { id: row.id, email: row.email, role: row.role },
+    sessionId: row.sessionId,
+    stage: (['enrolling', 'pending', 'full'].includes(row.stage) ? row.stage : 'pending') as SessionStage,
+    failedAttempts: row.failedAttempts,
+    totpEnabled: row.totpEnabledAt !== null,
+  };
+}
+
+/**
+ * Finishes sign-in by replacing the partial session with a full one.
+ *
+ * A new token, not an upgrade in place: a token observed during sign-in
+ * — on a shared screen, in a proxy log — is dead once the second factor
+ * is given. This is the standard defence against session fixation.
+ */
+export async function promoteToFull(
+  db: Db,
+  partialSessionId: string,
+  userId: string,
+  meta: { ip?: string | undefined; userAgent?: string | undefined },
+): Promise<{ token: string; expiresAt: Date }> {
+  await db.delete(adminSessions).where(eq(adminSessions.id, partialSessionId));
+  // "Last sign-in" means a completed one, not a correct password.
+  await db.update(adminUsers).set({ lastLoginAt: new Date() }).where(eq(adminUsers.id, userId));
+  return createSession(db, userId, meta, 'full');
+}
+
+/** Counts a wrong 2FA code against the session. Returns the new total. */
+export async function recordFailedCode(db: Db, sessionId: string): Promise<number> {
+  const [row] = await db
+    .update(adminSessions)
+    .set({ failedAttempts: sql`${adminSessions.failedAttempts} + 1` })
+    .where(eq(adminSessions.id, sessionId))
+    .returning({ n: adminSessions.failedAttempts });
+  return row?.n ?? Number.MAX_SAFE_INTEGER;
+}
+
+export async function destroySessionById(db: Db, sessionId: string): Promise<void> {
+  await db.delete(adminSessions).where(eq(adminSessions.id, sessionId));
 }
 
 export async function destroySession(db: Db, token: string | undefined): Promise<void> {

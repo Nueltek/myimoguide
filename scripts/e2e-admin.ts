@@ -23,7 +23,9 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { admin } from '../src/admin/routes';
 import { adminUsers, agencies, auditLog, facilities, services, stateFacts } from '../src/db/schema';
 import { eq } from 'drizzle-orm';
-import { MAX_PLATFORM_ITERATIONS, hashPassword } from '../src/admin/auth';
+import { MAX_PLATFORM_ITERATIONS, createSession, hashPassword } from '../src/admin/auth';
+import { base32Decode, currentStep, hotp } from '../src/admin/totp';
+import { adminSessions } from '../src/db/schema';
 
 const pg = await PGlite.create();
 // vector unavailable in pglite; the intents table is skipped below.
@@ -71,7 +73,11 @@ app.onError((err, c) => {
   return c.text('error', 500);
 });
 
-const env = { DATABASE_URL: 'unused' };
+// A throwaway key, generated per run. Never a real one.
+const env = {
+  DATABASE_URL: 'unused',
+  TOTP_ENCRYPTION_KEY: Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString('base64'),
+};
 const q = db as any;
 
 let failed = 0;
@@ -89,16 +95,8 @@ const form = (fields: Record<string, string>) => ({
   body: new URLSearchParams(fields).toString(),
 });
 
-let token = '';
-const get = (path: string, auth = true) => app.request(path, auth ? { headers: { cookie: token } } : {}, env);
-const post = (path: string, fields: Record<string, string>, auth = true) => {
-  const init = form(fields) as RequestInit & { headers: Record<string, string> };
-  if (auth) init.headers.cookie = token;
-  return app.request(path, init, env);
-};
-
-/* --- Auth ----------------------------------------------------------- */
-console.log('\nAuth');
+/* --- Sign-in, step one ---------------------------------------------- */
+console.log('\nSign-in: password');
 let r = await app.request('/admin/login', {}, env);
 check('login page renders', r.status === 200);
 
@@ -106,20 +104,192 @@ r = await app.request('/admin/login', form({ email, password: 'wrong-password-he
 check('wrong password is refused with 401', r.status === 401);
 check('wrong password sets no session', !r.headers.get('set-cookie'));
 
-r = await app.request('/admin/login', form({ email, password }), env);
+r = await app.request('/admin/login', form({ email: 'nobody@nueltek.dev', password }), env);
+check('an unknown account gets the same message as a wrong password',
+  r.status === 401 && (await r.text()).includes('Email or password is incorrect.'));
+
+const cookieOf = (res: Response) => res.headers.get('set-cookie')?.split(';')[0] ?? '';
+let token = '';
+const get = (path: string, auth = true, e: object = env) => app.request(path, auth ? { headers: { cookie: token } } : {}, e);
+const post = (path: string, fields: Record<string, string>, auth = true) => {
+  const init = form(fields) as RequestInit & { headers: Record<string, string> };
+  if (auth) init.headers.cookie = token;
+  return app.request(path, init, env);
+};
+const login = async () => {
+  const res = await app.request('/admin/login', form({ email, password }), env);
+  token = cookieOf(res);
+  return res;
+};
+const where = (res: Response) => `${res.status} ${res.headers.get('location') ?? ''}`;
+
+r = await login();
 const cookie = r.headers.get('set-cookie');
-check('correct password redirects to the overview', r.status === 302 && r.headers.get('location') === '/admin');
-check('correct password sets a session cookie', Boolean(cookie));
+check('a correct password alone does not reach the dashboard: it goes to 2FA setup',
+  r.status === 302 && r.headers.get('location') === '/admin/2fa/setup', where(r));
 check('session cookie is HttpOnly, Secure and SameSite=Strict',
   Boolean(cookie && /HttpOnly/.test(cookie) && /Secure/.test(cookie) && /SameSite=Strict/.test(cookie)));
-token = cookie?.split(';')[0] ?? '';
+check('the setup session lasts minutes, not hours',
+  Boolean(cookie) && new Date(/Expires=([^;]+)/.exec(cookie!)![1]!).getTime() - Date.now() <= 10 * 60_000 + 5_000);
 if (!token) { console.log('\nCannot continue without a session.'); process.exit(1); }
 
 r = await get('/admin/agencies', false);
-check('pages redirect to login without a session', r.status === 302 && r.headers.get('location') === '/admin/login');
+check('pages redirect to login without a session', where(r) === '302 /admin/login', where(r));
 r = await post('/admin/agencies/new', { name: 'Should Not Exist' }, false);
-const sneaked = await q.select().from(agencies).where(eq(agencies.name, 'Should Not Exist'));
+let sneaked = await q.select().from(agencies).where(eq(agencies.name, 'Should Not Exist'));
 check('writes without a session are refused and save nothing', r.status === 302 && sneaked.length === 0);
+
+/* --- Enrolment ------------------------------------------------------- */
+console.log('\nSign-in: setting up 2FA');
+for (const path of ['/admin', '/admin/audit', '/admin/2fa']) {
+  r = await get(path);
+  check(`before setup, ${path} sends you back to setup`, where(r) === '302 /admin/2fa/setup', where(r));
+}
+r = await post('/admin/agencies/new', { name: 'Should Not Exist' });
+sneaked = await q.select().from(agencies).where(eq(agencies.name, 'Should Not Exist'));
+check('before setup, writes are refused and save nothing', where(r) === '302 /admin/2fa/setup' && sneaked.length === 0);
+
+r = await get('/admin/2fa/setup');
+let body = await r.text();
+const secret = /data-secret[^>]*>([A-Z2-7 ]+)</.exec(body)?.[1]?.replace(/ /g, '') ?? '';
+check('setup page shows a QR code', r.status === 200 && body.includes('<svg'));
+check('setup page shows the key for typing in by hand', secret.length === 32, `got "${secret}"`);
+if (secret.length !== 32) { console.log('\nCannot continue without the key.'); process.exit(1); }
+check('dashboard pages are marked no-store', r.headers.get('cache-control') === 'no-store');
+
+r = await get('/admin/2fa/setup');
+check('reloading setup shows the same key, not a new one', (await r.text()).includes(secret.slice(0, 4) + ' ' + secret.slice(4, 8)));
+
+const [pendingRow] = await q.select().from(adminUsers).where(eq(adminUsers.email, email));
+check('the key is stored encrypted, not as typed', Boolean(pendingRow.totpPendingSecret) && !pendingRow.totpPendingSecret.includes(secret));
+
+const key = base32Decode(secret);
+const codeAt = (step: number) => hotp(key, step);
+async function wrongCode(): Promise<string> {
+  const now = currentStep();
+  const valid = new Set(await Promise.all([now - 1, now, now + 1, now + 2].map(codeAt)));
+  for (const c of ['000000', '111111', '222222']) if (!valid.has(c)) return c;
+  throw new Error('unreachable');
+}
+
+r = await post('/admin/2fa/setup', { code: await wrongCode() });
+check('a wrong setup code is refused, with attempts left', r.status === 422 && (await r.text()).includes('4 attempts left'));
+
+const setupStep = currentStep();
+const enrolToken = token;
+r = await post('/admin/2fa/setup', { code: await codeAt(setupStep) });
+body = await r.text();
+const recoveryCodes = [...body.matchAll(/<span>([A-Z2-9]{5}-[A-Z2-9]{5})<\/span>/g)].map((m) => m[1]!);
+check('the right code finishes setup and shows the recovery codes', r.status === 200 && recoveryCodes.length === 10, `got ${r.status}, ${recoveryCodes.length} codes`);
+check('the recovery codes page is no-store', r.headers.get('cache-control') === 'no-store');
+token = cookieOf(r);
+check('finishing setup issues a new session token', Boolean(token) && token !== enrolToken);
+
+const [enrolled] = await q.select().from(adminUsers).where(eq(adminUsers.email, email));
+check('2FA is recorded as on', enrolled.totpEnabledAt !== null && enrolled.totpSecret && enrolled.totpPendingSecret === null);
+check('recovery codes are stored only as hashes', enrolled.recoveryCodeHashes.length === 10 &&
+  !enrolled.recoveryCodeHashes.some((h: string) => recoveryCodes.some((c) => h.includes(c.replace('-', '')))));
+check('a completed sign-in updates "last sign-in"', enrolled.lastLoginAt !== null);
+
+r = await app.request('/admin', { headers: { cookie: enrolToken } }, env);
+check('the setup-stage token is dead once setup is done', where(r) === '302 /admin/login', where(r));
+
+r = await get('/admin/2fa');
+check('once signed in, the 2FA pages send you to the dashboard', where(r) === '302 /admin', where(r));
+r = await get('/admin/2fa/setup');
+check('once signed in, setup cannot be run again to replace the app', where(r) === '302 /admin', where(r));
+
+r = await post('/admin/logout', {});
+check('signing out redirects to the sign-in page', where(r) === '302 /admin/login?signedout=1', where(r));
+r = await get('/admin');
+check('the token is dead after signing out', where(r) === '302 /admin/login', where(r));
+
+/* --- Challenge -------------------------------------------------------- */
+console.log('\nSign-in: entering a code');
+r = await login();
+check('with 2FA on, a correct password goes to the code page', where(r) === '302 /admin/2fa', where(r));
+for (const path of ['/admin', '/admin/2fa/setup', '/admin/services/new']) {
+  r = await get(path);
+  check(`before the code, ${path} sends you to the code page`, where(r) === '302 /admin/2fa', where(r));
+}
+
+r = await post('/admin/2fa', { code: await codeAt(setupStep) });
+check('the code used for setup cannot be used again (replay)', r.status === 422 && (await r.text()).includes('already been used'));
+
+const nextCode = await codeAt(currentStep() + 1);
+r = await post('/admin/2fa', { code: nextCode });
+check('a fresh code signs in', where(r) === '302 /admin', where(r));
+token = cookieOf(r);
+r = await get('/admin');
+check('the dashboard opens after the code', r.status === 200);
+await post('/admin/logout', {});
+
+/* --- Lockout ---------------------------------------------------------- */
+console.log('\nSign-in: wrong codes');
+await login();
+r = await post('/admin/2fa', { code: nextCode });
+check('a code that already signed someone in is refused', r.status === 422 && (await r.text()).includes('already been used'));
+const lockToken = token;
+for (let i = 0; i < 3; i++) await post('/admin/2fa', { code: await wrongCode() });
+r = await post('/admin/2fa', { code: await wrongCode() });
+check('the fifth wrong code ends the sign-in', where(r) === '302 /admin/login?locked=1', where(r));
+check('and clears the cookie', /Max-Age=0/.test(r.headers.get('set-cookie') ?? ''));
+r = await app.request('/admin/2fa', { headers: { cookie: lockToken } }, env);
+check('the locked-out token cannot be used to keep guessing', where(r) === '302 /admin/login', where(r));
+r = await app.request('/admin/login?locked=1', {}, env);
+check('the sign-in page explains why', (await r.text()).includes('Too many incorrect codes'));
+
+/* --- Recovery codes --------------------------------------------------- */
+console.log('\nSign-in: recovery codes');
+await login();
+const typedLoosely = recoveryCodes[0]!.toLowerCase().replace('-', ' ');
+r = await post('/admin/2fa', { code: typedLoosely });
+check('a recovery code signs in, however it is typed', where(r) === '302 /admin?recovery=9', where(r));
+token = cookieOf(r);
+r = await get('/admin?recovery=9');
+check('the overview warns that a recovery code was used', (await r.text()).includes('You signed in with a recovery code'));
+await post('/admin/logout', {});
+
+await login();
+r = await post('/admin/2fa', { code: recoveryCodes[0]! });
+check('a recovery code works only once', r.status === 422 && (await r.text()).includes('already been used'));
+r = await post('/admin/2fa', { code: recoveryCodes[1]! });
+check('another recovery code still works', where(r) === '302 /admin?recovery=8', where(r));
+token = cookieOf(r);
+const [afterRecovery] = await q.select().from(adminUsers).where(eq(adminUsers.email, email));
+check('used recovery codes are removed', afterRecovery.recoveryCodeHashes.length === 8);
+
+/* --- Race ------------------------------------------------------------- */
+console.log('\nSign-in: the same code twice at once');
+// Two sign-ins racing with one code — an attacker who watched it being
+// typed. Reading "last used step" and then writing it is not enough: both
+// requests can read before either writes. Only one may get through.
+// The last-used step is cleared first so that a fresh code is available
+// whatever the clock says.
+await q.update(adminUsers).set({ totpLastStep: null }).where(eq(adminUsers.email, email));
+await login(); const raceA = token;
+await login(); const raceB = token;
+const raceCode = await codeAt(currentStep());
+const raced = await Promise.all([raceA, raceB].map((t) => {
+  const init = form({ code: raceCode }) as RequestInit & { headers: Record<string, string> };
+  init.headers.cookie = t;
+  return app.request('/admin/2fa', init, env);
+}));
+const winners = raced.filter((res) => where(res) === '302 /admin').length;
+check('exactly one of two simultaneous sign-ins with the same code succeeds', winners === 1, raced.map(where).join(' | '));
+token = cookieOf(raced.find((res) => where(res) === '302 /admin') ?? raced[0]!);
+
+/* --- Older sessions and missing configuration ------------------------- */
+console.log('\nSign-in: edge cases');
+const legacyEmail = 'legacy@nueltek.dev';
+const [legacy] = await q.insert(adminUsers).values({ email: legacyEmail, passwordHash, role: 'admin' }).returning();
+const legacySession = await createSession(db, legacy.id, {}, 'full');
+r = await app.request('/admin', { headers: { cookie: `myimoguide_session=${legacySession.token}` } }, env);
+check('a full session from before 2FA is sent to setup, not let in', where(r) === '302 /admin/2fa/setup', where(r));
+r = await app.request('/admin/2fa/setup', { headers: { cookie: `myimoguide_session=${legacySession.token}` } }, { DATABASE_URL: 'unused' });
+body = await r.text();
+check('without the encryption key, setup explains the problem instead of crashing',
+  r.status === 503 && body.includes('TOTP_ENCRYPTION_KEY'), `got ${r.status}`);
 
 /* --- Every page renders --------------------------------------------- */
 console.log('\nPages');
@@ -149,7 +319,7 @@ const youth = {
 };
 
 r = await post('/admin/agencies/new', { ...youth, name: '' });
-let body = await r.text();
+body = await r.text();
 check('missing name returns 422', r.status === 422, `got ${r.status}`);
 check('missing name shows the error', body.includes('Full name is required.'));
 check('missing name keeps what was typed', body.includes('Youth empowerment schemes, skills acquisition'));
@@ -279,13 +449,45 @@ check('an over-long answer is refused', r.status === 422 && (await r.text()).inc
 console.log('\nAudit');
 const log = await q.select().from(auditLog);
 const count = (a: string) => log.filter((x: any) => x.action === a).length;
-check('sign-in is recorded', count('login') >= 1);
+check('completed sign-ins are recorded (setup, code, 2 recovery, race winner)', count('login') === 5, `got ${count('login')}`);
+check('sign-outs are recorded', count('logout') === 3, `got ${count('logout')}`);
+check('2FA setup is recorded', count('twofa_enabled') === 1);
+check('every wrong code is recorded (1 setup, 1 replay, 5 lockout, 1 reused recovery code, 1 race loser)', count('twofa_failed') === 9, `got ${count('twofa_failed')}`);
+check('the lockout is recorded', count('twofa_locked') === 1);
+check('recovery code use is recorded', count('recovery_code_used') === 2);
+check('failed passwords are recorded, with the reason', count('login_failed') === 2 &&
+  log.some((x: any) => x.action === 'login_failed' && x.actorEmail === 'nobody@nueltek.dev' && x.after?.reason === 'unknown_account'));
 check('every create is recorded (agency, 2 services, 2 facilities, fact)', count('create') === 6, `got ${count('create')}`);
 check('every update is recorded (agency, service, fact)', count('update') === 3, `got ${count('update')}`);
-check('every entry names who did it', log.every((x: any) => x.actorEmail === email));
+check('every dashboard entry names who did it',
+  log.filter((x: any) => x.action !== 'login_failed').every((x: any) => x.actorEmail === email));
 const svcUpdate = log.find((x: any) => x.action === 'update' && x.tableName === 'services');
 check('updates keep the before and after values', svcUpdate?.before?.feeAmount === '15000.00' && svcUpdate?.after?.feeAmount === '20000.00');
-check('failed validations wrote nothing to the audit log', log.length === count('login') + 6 + 3);
+const known = ['login', 'logout', 'twofa_enabled', 'twofa_failed', 'twofa_locked', 'recovery_code_used', 'login_failed', 'create', 'update'];
+check('failed validations wrote nothing to the audit log', log.every((x: any) => known.includes(x.action)) &&
+  log.length === 5 + 3 + 1 + 9 + 1 + 2 + 2 + 6 + 3, `got ${log.length}`);
+
+r = await get('/admin/audit');
+body = await r.text();
+check('the audit page labels events in plain words', body.includes('Sign-in failed') && body.includes('Locked out') && body.includes('wrong password'));
+
+/* --- Password throttling (last: it locks the account) --------------- */
+console.log('\nPassword throttling');
+let attempts = 0;
+for (; attempts < 10; attempts++) {
+  r = await app.request('/admin/login', form({ email, password: 'still-the-wrong-one' }), env);
+  if (r.status === 429) break;
+}
+const failures = (await q.select().from(auditLog).where(eq(auditLog.action, 'login_failed')))
+  .filter((x: any) => x.actorEmail === email).length;
+check('the account locks after 5 failed passwords in 15 minutes', failures === 5 && r.status === 429, `${failures} failures, status ${r.status}`);
+r = await app.request('/admin/login', form({ email, password }), env);
+check('while locked, even the right password is refused', r.status === 429 && !r.headers.get('set-cookie'));
+check('the message says to wait, without saying whether the password was right', (await r.text()).includes('Wait 15 minutes'));
+r = await app.request('/admin/login', form({ email: legacyEmail, password }), env);
+check('other accounts are not locked by it', where(r) === '302 /admin/2fa/setup', where(r));
+
+void adminSessions;
 
 console.log(failed ? `\n${failed} FAILED\n` : '\ne2e passed\n');
 process.exit(failed || process.exitCode ? 1 : 0);
