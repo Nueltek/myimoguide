@@ -92,7 +92,7 @@ h1{font-size:20px} h2{font-size:16px} h3{font-size:14px}
 .content{padding:24px 28px 56px;max-width:1160px;width:100%}
 .lede{color:var(--ink-500);font-size:13.5px;margin:5px 0 0}
 
-.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:12px;margin:20px 0 26px}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;margin:20px 0 26px}
 .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:14px 16px}
 .card-k{font-size:11.5px;text-transform:uppercase;letter-spacing:.055em;color:var(--ink-500);font-weight:500}
 .card-v{font-size:25px;font-weight:600;margin-top:5px;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
@@ -334,6 +334,7 @@ const PATHS = {
   users: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8"/>',
   user: '<circle cx="12" cy="8" r="4"/><path d="M4 21v-1a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v1"/>',
   key: '<circle cx="7.5" cy="15.5" r="4.5"/><path d="m10.7 12.3 9.8-9.8M17 6l3 3M14 9l2 2"/>',
+  mic: '<rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v4M8 22h8"/>',
   copy: '<rect width="13" height="13" x="9" y="9" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
 } as const;
 

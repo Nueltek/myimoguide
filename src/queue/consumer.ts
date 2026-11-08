@@ -3,6 +3,8 @@ import { createDb } from '../db/client';
 import { markRead, sendText } from '../whatsapp/client';
 import { answerQuestion } from '../agent/answer';
 import { activeConfig } from '../agent/models';
+import { transcriberFor } from '../voice/transcribe';
+import { UNHEARD_LABELS, UNHEARD_REPLIES, echoLine, hearVoiceNote, type Hearing } from '../voice/hear';
 
 /**
  * Where the slow work happens, off the webhook's critical path.
@@ -73,7 +75,18 @@ export async function handleBatch(
   }
 }
 
-type ConvoStub = ReturnType<Env['CONVERSATION']['get']>;
+type ConvoStub = Pick<ReturnType<Env['CONVERSATION']['get']>, 'allow' | 'recent' | 'append'>;
+
+/**
+ * What respond() calls out to. Defaults are the real ones; the test
+ * harness passes its own so the whole pipeline — voice note in, reply
+ * and database row out — runs without a model or a phone.
+ */
+export interface Deps {
+  answer: typeof answerQuestion;
+  hear: typeof hearVoiceNote;
+}
+const REAL: Deps = { answer: answerQuestion, hear: hearVoiceNote };
 
 async function handleOne(
   job: InboundJob,
@@ -95,12 +108,14 @@ async function handleOne(
   await convo.markDone(job.messageId);
 }
 
-async function respond(
-  job: InboundJob,
+export async function respond(
+  incoming: InboundJob,
   env: Env,
   db: ReturnType<typeof createDb>,
   convo: ConvoStub,
+  deps: Deps = REAL,
 ): Promise<void> {
+  let job = incoming;
   if (!(await convo.allow())) {
     await sendText(env, job.from, 'You have sent a lot of messages just now. Please try again in a few minutes.');
     return;
@@ -138,15 +153,9 @@ async function respond(
         `Routing model: ${cfg.routingModel}`,
         `Synthesis model: ${cfg.synthesisModel}`,
         `API key present: ${cfg.keyPresent ? 'yes' : 'NO — calls will fail'}`,
+        `Voice notes: ${voiceStatus(env)}`,
       ].join('\n'),
     );
-    return;
-  }
-
-  // Voice notes are table stakes on WhatsApp in Nigeria. Transcription is
-  // wired in Phase 3, step 7 — until then, say so rather than fail silently.
-  if (job.kind === 'audio') {
-    await sendText(env, job.from, 'Voice notes are coming soon. Please type your question for now.');
     return;
   }
 
@@ -163,6 +172,34 @@ async function respond(
   const stage = (name: string) =>
     console.log(`stage: ${name} (${Date.now() - started}ms) ${job.messageId}`);
 
+  // Voice notes become text here, and from then on take exactly the same
+  // path as a typed question. Nothing about the audio is kept: not the
+  // file, and not the media id once this invocation ends.
+  let voice: Extract<Hearing, { ok: true }> | null = null;
+  if (job.kind === 'audio') {
+    stage('transcribing');
+    const heard = job.mediaId
+      ? await deps.hear(env, job.mediaId)
+      : ({
+          ok: false,
+          reason: 'unreadable',
+          reply: UNHEARD_REPLIES.unreadable,
+          language: null,
+          seconds: null,
+          detail: 'no media id',
+          provider: transcriberFor(env).provider,
+          model: transcriberFor(env).model,
+        } as const);
+    stage(heard.ok ? 'heard' : `unheard:${heard.reason}`);
+    if (!heard.ok) {
+      await sendText(env, job.from, heard.reply);
+      await logUnheard(db, env, job, heard, Date.now() - started);
+      return;
+    }
+    voice = heard;
+    job = { ...job, text: heard.text };
+  }
+
   stage('history');
   const history = await convo.recent();
 
@@ -177,9 +214,12 @@ async function respond(
   // The budget keeps us inside the indicator's lifetime, so a slow search
   // produces an honest reply rather than silence.
   stage('answering');
+  // One budget for the whole pipeline: time spent transcribing comes out
+  // of the time left to answer, so the reply still lands while the typing
+  // indicator is showing.
   const result = await withBudget(
-    answerQuestion({ db, env, question: job.text, history }),
-    ANSWER_BUDGET_MS,
+    deps.answer({ db, env, question: job.text, history }),
+    Math.max(5_000, ANSWER_BUDGET_MS - (Date.now() - started)),
   );
   stage(result ? `answered:${result.tier}` : 'budget-exceeded');
 
@@ -199,7 +239,7 @@ async function respond(
     `answered: tier=${result.tier} provider=${result.provider} model=${result.model}`,
   );
 
-  await sendText(env, job.from, result.text);
+  await sendText(env, job.from, voice ? `${echoLine(voice.text)}\n\n${result.text}` : result.text);
   stage('sent');
 
   await convo.append('user', job.text);
@@ -207,8 +247,13 @@ async function respond(
 
   // Logging every question — matched or not — is how the pilot produces the
   // gap list that becomes the pitch.
-  await logQuery(db, env, job, result, Date.now() - started);
+  await logQuery(db, env, job, result, Date.now() - started, voice);
   stage('logged');
+}
+
+function voiceStatus(env: Env): string {
+  const t = transcriberFor(env);
+  return `${t.provider} ${t.model}${t.problem ? ` — NOT READY: ${t.problem}` : ''}`;
 }
 
 /** Is this sender allowed to run diagnostic commands? */
@@ -236,6 +281,7 @@ async function logQuery(
   job: InboundJob,
   result: Awaited<ReturnType<typeof answerQuestion>>,
   latencyMs: number,
+  voice: Extract<Hearing, { ok: true }> | null,
 ): Promise<void> {
   const { queries } = await import('../db/schema');
   await db
@@ -245,6 +291,8 @@ async function logQuery(
       messageId: job.messageId,
       question: job.text,
       wasVoice: job.kind === 'audio',
+      language: voice?.language ?? null,
+      audioSeconds: voice?.seconds ?? null,
       matchedServiceId: result.serviceId ?? null,
       matchedFacilityId: result.facilityId ?? null,
       wasResolved: result.resolved,
@@ -309,3 +357,34 @@ export async function handleDeadLetter(
   }
 }
 
+/**
+ * A voice note we could not act on is still a question someone asked.
+ * Logged with its reason, so the dashboard shows how often voice fails
+ * and why — silence, length, or the transcription service itself.
+ */
+async function logUnheard(
+  db: ReturnType<typeof createDb>,
+  env: Env,
+  job: InboundJob,
+  heard: Extract<Hearing, { ok: false }>,
+  latencyMs: number,
+): Promise<void> {
+  const { queries } = await import('../db/schema');
+  await db
+    .insert(queries)
+    .values({
+      userHash: await hashUser(job.from, env.WHATSAPP_APP_SECRET),
+      messageId: job.messageId,
+      question: `(Voice note: ${UNHEARD_LABELS[heard.reason]})`,
+      wasVoice: true,
+      language: heard.language,
+      audioSeconds: heard.seconds,
+      wasResolved: false,
+      answerTier: 'unheard',
+      provider: heard.provider,
+      model: heard.model.slice(0, 64),
+      answer: heard.reply,
+      latencyMs,
+    })
+    .onConflictDoNothing();
+}

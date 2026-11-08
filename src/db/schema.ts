@@ -4,6 +4,7 @@ import {
   doublePrecision,
   index,
   integer,
+  real,
   jsonb,
   numeric,
   pgEnum,
@@ -242,15 +243,19 @@ export const queries = pgTable('queries', {
   userHash: varchar('user_hash', { length: 64 }).notNull(),
   messageId: varchar('message_id', { length: 128 }).notNull(),
   question: text('question').notNull(),
+  /** For voice notes: the language the transcriber detected. */
   language: varchar('language', { length: 8 }),
   wasVoice: boolean('was_voice').notNull().default(false),
+  /** Length of the voice note, as the transcriber measured it. The audio itself is never stored. */
+  audioSeconds: real('audio_seconds'),
 
   matchedServiceId: uuid('matched_service_id').references(() => services.id, { onDelete: 'set null' }),
   matchedFacilityId: uuid('matched_facility_id').references(() => facilities.id, { onDelete: 'set null' }),
   /** False when we fell back to "I don't know, here is who to call". */
   wasResolved: boolean('was_resolved').notNull().default(false),
   /**
-   * Which tier produced the answer: verified | sourced | withheld | unknown.
+   * Which tier produced the answer: verified | sourced | withheld | unknown
+   * | error, or 'unheard' for a voice note we could not act on.
    *
    * The share each tier carries is the pitch's central number. A high
    * 'sourced' count is the concrete argument for MDA access: these are

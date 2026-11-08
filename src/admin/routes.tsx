@@ -201,11 +201,20 @@ admin.get('/', async (c) => {
     .from(queries)
     .groupBy(queries.answerTier);
 
+  const voiceStats = await db
+    .select({
+      total: sql<number>`count(*) filter (where ${queries.wasVoice})::int`,
+      unheard: sql<number>`count(*) filter (where ${queries.answerTier} = 'unheard')::int`,
+      seconds: sql<number>`coalesce(sum(${queries.audioSeconds}), 0)::float`,
+    })
+    .from(queries);
+
   const recent = await db
     .select({
       question: queries.question,
       tier: queries.answerTier,
       provider: queries.provider,
+      wasVoice: queries.wasVoice,
       createdAt: queries.createdAt,
     })
     .from(queries)
@@ -218,6 +227,7 @@ admin.get('/', async (c) => {
   const verified = byTier.verified ?? 0;
   const sourced = byTier.sourced ?? 0;
   const unresolved = (byTier.unknown ?? 0) + (byTier.error ?? 0);
+  const voice = voiceStats[0] ?? { total: 0, unheard: 0, seconds: 0 };
 
   const recovery = c.req.query('recovery');
   const left = recovery === undefined ? null : Number(recovery);
@@ -249,6 +259,15 @@ admin.get('/', async (c) => {
           note={totalQ ? `${pct(unresolved, totalQ)}% — the gap list` : '—'}
         />
         <Stat
+          k="Voice notes"
+          v={voice.total}
+          note={
+            voice.total
+              ? `${voice.unheard} not understood · ${audioLength(voice.seconds)} of audio`
+              : 'None yet'
+          }
+        />
+        <Stat
           k="Services"
           v={stats.total}
           note={`${stats.confirmed} phone-confirmed`}
@@ -278,7 +297,9 @@ admin.get('/', async (c) => {
             <tbody>
               {recent.map((q) => (
                 <tr>
-                  <td>{q.question}</td>
+                  <td>
+                    <Question text={q.question} voice={q.wasVoice} />
+                  </td>
                   <td><TierBadge tier={q.tier} /></td>
                   <td class="t-dim">{q.provider ?? '—'}</td>
                   <td class="num t-dim">{formatDateTime(q.createdAt)}</td>
@@ -294,9 +315,19 @@ admin.get('/', async (c) => {
 
 /* ------------------------------------------------------------------ */
 
+const QUESTION_FILTERS = [
+  { key: '', label: 'All' },
+  { key: 'verified', label: 'Verified' },
+  { key: 'sourced', label: 'Cited sources' },
+  { key: 'unknown', label: 'Unanswered' },
+  { key: 'withheld', label: 'Withheld' },
+  { key: 'voice', label: 'Voice notes' },
+  { key: 'unheard', label: 'Voice not understood' },
+] as const;
+
 admin.get('/queries', async (c) => {
   const db = c.get('db');
-  const filter = c.req.query('tier');
+  const filter = QUESTION_FILTERS.find((f) => f.key === (c.req.query('tier') ?? ''))?.key ?? '';
 
   const base = db
     .select({
@@ -305,13 +336,18 @@ admin.get('/queries', async (c) => {
       provider: queries.provider,
       model: queries.model,
       latencyMs: queries.latencyMs,
+      wasVoice: queries.wasVoice,
+      language: queries.language,
+      audioSeconds: queries.audioSeconds,
       createdAt: queries.createdAt,
     })
     .from(queries);
 
-  const rows = await (filter
-    ? base.where(eq(queries.answerTier, filter))
-    : base
+  const rows = await (filter === 'voice'
+    ? base.where(eq(queries.wasVoice, true))
+    : filter
+      ? base.where(eq(queries.answerTier, filter))
+      : base
   )
     .orderBy(desc(queries.createdAt))
     .limit(200);
@@ -319,19 +355,25 @@ admin.get('/queries', async (c) => {
   return c.html(
     <Shell title="Questions" path="/admin/queries" user={c.get('user')}>
       <div style="display:flex;gap:8px;margin-bottom:18px;flex-wrap:wrap">
-        <a class="btn" href="/admin/queries">All</a>
-        <a class="btn" href="/admin/queries?tier=verified">Verified</a>
-        <a class="btn" href="/admin/queries?tier=sourced">Cited sources</a>
-        <a class="btn" href="/admin/queries?tier=unknown">Unanswered</a>
-        <a class="btn" href="/admin/queries?tier=withheld">Withheld</a>
+        {QUESTION_FILTERS.map((f) => (
+          <a
+            class={`btn${f.key === filter ? ' primary' : ''}`}
+            href={f.key ? `/admin/queries?tier=${f.key}` : '/admin/queries'}
+            aria-current={f.key === filter ? 'page' : undefined}
+          >
+            {f.label}
+          </a>
+        ))}
       </div>
 
       <div class="panel">
         <div class="panel-h">
           <div>
-            <h2>{filter ? `Questions answered: ${filter}` : 'All questions'}</h2>
+            <h2>{QUESTION_FILTERS.find((f) => f.key === filter)?.label ?? 'All'} questions</h2>
             <p>
-              Unanswered questions are the gap list — what residents want that no record covers yet.
+              {filter === 'unheard'
+                ? 'Voice notes the service could not act on, and why.'
+                : 'Unanswered questions are the gap list — what residents want that no record covers yet.'}
             </p>
           </div>
         </div>
@@ -351,7 +393,16 @@ admin.get('/queries', async (c) => {
             <tbody>
               {rows.map((q) => (
                 <tr>
-                  <td>{q.question}</td>
+                  <td>
+                    <Question text={q.question} voice={q.wasVoice} />
+                    {q.wasVoice && (q.audioSeconds || q.language) ? (
+                      <div class="t-dim" style="font-size:12px;margin-top:2px">
+                        {[q.audioSeconds ? `${Math.round(q.audioSeconds)}s` : null, q.language ? `heard as ${languageName(q.language)}` : null]
+                          .filter(Boolean)
+                          .join(' · ')}
+                      </div>
+                    ) : null}
+                  </td>
                   <td><TierBadge tier={q.tier} /></td>
                   <td class="t-dim">{q.model ?? '—'}</td>
                   <td class="num t-dim">{q.latencyMs ? `${(q.latencyMs / 1000).toFixed(1)}s` : '—'}</td>
@@ -450,6 +501,7 @@ const TierBadge = ({ tier }: { tier: string | null }) => {
     withheld: { cls: 'muted', label: 'Withheld' },
     unknown: { cls: 'bad', label: 'Unanswered' },
     error: { cls: 'bad', label: 'Error' },
+    unheard: { cls: 'warn', label: 'Not understood' },
   };
   const v = map[tier ?? 'unknown'] ?? map.unknown!;
   return <span class={`badge ${v.cls}`}>{v.label}</span>;
@@ -471,4 +523,29 @@ function detailOf(before: unknown, after: unknown): string | null {
   if (typeof b.role === 'string' && typeof a.role === 'string') return `${role(b.role)} → ${role(a.role)}`;
   if (typeof a.email === 'string' && typeof a.role === 'string') return `${a.email} as ${role(a.role)}`;
   return null;
+}
+
+/** A question, marked when it arrived as a voice note. */
+const Question = ({ text, voice }: { text: string; voice: boolean }) =>
+  voice ? (
+    <span style="display:inline-flex;gap:6px;align-items:baseline">
+      <span title="Voice note" aria-label="Voice note" style="color:var(--ink-500);position:relative;top:2px">
+        <Icon name="mic" size={14} />
+      </span>
+      <span>{text}</span>
+    </span>
+  ) : (
+    <>{text}</>
+  );
+
+const LANGUAGES: Record<string, string> = { en: 'English', ig: 'Igbo', pcm: 'Nigerian Pidgin', yo: 'Yoruba', ha: 'Hausa' };
+
+/** Whisper's language code as a word, where we know it. */
+function languageName(code: string): string {
+  return LANGUAGES[code] ?? code;
+}
+
+/** "13 s", "4 min": seconds until a minute and a half, minutes after. */
+function audioLength(seconds: number): string {
+  return seconds < 90 ? `${Math.round(seconds)} s` : `${Math.round(seconds / 60)} min`;
 }

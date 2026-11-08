@@ -15,7 +15,7 @@ import type { Env } from '../types';
  *   MODEL_PROVIDER    "anthropic" (default) | "openai"
  *   ROUTING_MODEL     override the per-provider default below
  *   SYNTHESIS_MODEL   override the per-provider default below
- *   OPENAI_API_KEY    required only when MODEL_PROVIDER is "openai"
+ *   OPENAI_API_KEY    required when MODEL_PROVIDER is "openai", and for voice notes
  *
  * GET /health reports which provider and models are live, so a switch can
  * be confirmed rather than assumed.

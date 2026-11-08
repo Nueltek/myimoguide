@@ -26,7 +26,7 @@ import { eq } from 'drizzle-orm';
 import { MAX_PLATFORM_ITERATIONS, createSession, hashPassword } from '../src/admin/auth';
 import { base32Decode, currentStep, hotp, hashRecoveryCode } from '../src/admin/totp';
 import { permits, returnPathFor, safeNext } from '../src/admin/access';
-import { adminInvites } from '../src/db/schema';
+import { adminInvites, queries } from '../src/db/schema';
 import { adminSessions } from '../src/db/schema';
 
 const pg = await PGlite.create();
@@ -329,6 +329,26 @@ r = await get('/admin/services/not-a-uuid');
 check('a malformed id is a 404, not a 500', r.status === 404, `got ${r.status}`);
 r = await get('/admin/agencies/00000000-0000-4000-8000-000000000000');
 check('an unknown id is a 404', r.status === 404, `got ${r.status}`);
+
+/* --- Questions, including voice notes ------------------------------- */
+console.log('\nQuestions and voice notes');
+await q.insert(queries).values([
+  { userHash: 'a'.repeat(64), messageId: 'wamid.text1', question: 'Where do I pay my tax?', wasVoice: false, answerTier: 'verified', provider: 'anthropic', model: 'claude-haiku-5-5' },
+  { userHash: 'b'.repeat(64), messageId: 'wamid.voice1', question: 'Abeg how I go get Certificate of Occupancy?', wasVoice: true, audioSeconds: 9.4, answerTier: 'sourced', provider: 'anthropic', model: 'claude-sonnet-5-5' },
+  { userHash: 'c'.repeat(64), messageId: 'wamid.voice2', question: '(Voice note: no speech heard)', wasVoice: true, audioSeconds: 50.6, answerTier: 'unheard', provider: 'openai', model: 'gpt-transcribe' },
+]);
+r = await get('/admin');
+body = await r.text();
+check('the overview counts voice notes, failures and minutes', body.includes('Voice notes') && body.includes('1 not understood · 60 s of audio'));
+r = await get('/admin/queries?tier=voice');
+body = await r.text();
+check('the voice filter shows only voice notes', body.includes('Certificate of Occupancy') && !body.includes('Where do I pay my tax?'));
+check('voice questions are marked, with their length', body.includes('aria-label="Voice note"') && body.includes('9s'));
+r = await get('/admin/queries?tier=unheard');
+body = await r.text();
+check('the "not understood" filter shows why', body.includes('(Voice note: no speech heard)') && body.includes('Not understood') && !body.includes('Certificate of Occupancy'));
+r = await get('/admin/queries?tier=%27%3B+drop+table+queries%3B--');
+check('an unknown filter falls back to all questions', r.status === 200 && (await r.text()).includes('Where do I pay my tax?'));
 
 /* --- Agencies ------------------------------------------------------- */
 console.log('\nAgencies');

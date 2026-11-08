@@ -57,6 +57,13 @@
       "when": 1794136129333,
       "tag": "0007_user_management",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1794154659575,
+      "tag": "0008_voice_notes",
+      "breakpoints": true
     }
   ]
 }

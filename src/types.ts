@@ -14,6 +14,14 @@ export interface Env {
 
   // Plain vars
   WHATSAPP_API_VERSION: string;
+  /**
+   * Who transcribes voice notes. "openai" (the default, and for now the
+   * only one). Separate from MODEL_PROVIDER: answers can come from
+   * Anthropic while voice notes are transcribed by OpenAI.
+   */
+  TRANSCRIBE_PROVIDER?: 'openai';
+  /** Optional transcription model override; blank uses gpt-transcribe. */
+  TRANSCRIBE_MODEL?: string;
   /** "anthropic" (default) or "openai". See src/agent/models.ts. */
   MODEL_PROVIDER?: 'anthropic' | 'openai';
   /** Optional model overrides; blank uses the provider's default. */
@@ -56,7 +64,7 @@ export interface InboundJob {
   from: string;
   /** Our phone number id, so one Worker can serve several numbers later. */
   phoneNumberId: string;
-  /** Message text, or the transcript placeholder for audio. */
+  /** Message text. Empty for audio until the consumer transcribes it. */
   text: string;
   /** 'text' | 'audio' | other — audio is transcribed in the consumer. */
   kind: 'text' | 'audio' | 'unsupported';

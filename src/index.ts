@@ -6,6 +6,7 @@ import { handleBatch, handleDeadLetter } from './queue/consumer';
 import { activeConfig } from './agent/models';
 import { admin } from './admin/routes';
 import { loadKey } from './admin/secretbox';
+import { transcriberFor } from './voice/transcribe';
 import { createDb } from './db/client';
 import { sql } from 'drizzle-orm';
 
@@ -58,7 +59,18 @@ app.get('/health', async (c) => {
     twoFactorKey = c.env.TOTP_ENCRYPTION_KEY ? 'invalid' : 'missing';
   }
 
-  return c.json({ ok: database.ok, ...base, database, dashboard: { twoFactorKey } }, database.ok ? 200 : 503);
+  // Voice notes are transcribed by their own provider, which may differ
+  // from the answering one: answers from Anthropic still need an OpenAI
+  // key for voice.
+  const transcriber = transcriberFor(c.env);
+  const voice = {
+    provider: transcriber.provider,
+    model: transcriber.model,
+    ready: transcriber.problem === null,
+    ...(transcriber.problem ? { problem: transcriber.problem } : {}),
+  };
+
+  return c.json({ ok: database.ok, ...base, database, voice, dashboard: { twoFactorKey } }, database.ok ? 200 : 503);
 });
 
 /** Meta's one-time handshake when the webhook URL is saved. */

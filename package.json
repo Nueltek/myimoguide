@@ -22,7 +22,9 @@
     "test:e2e": "esbuild scripts/e2e-admin.ts --bundle --platform=node --format=esm --jsx=automatic --jsx-import-source=hono/jsx --outfile=.test-build/e2e.mjs --external:@electric-sql/pglite --log-level=error && node .test-build/e2e.mjs",
     "test:dedupe": "tsx scripts/test-dedupe.ts",
     "test:totp": "tsx scripts/test-totp.ts",
-    "test": "npm run test:dedupe && npm run test:totp && npm run test:e2e"
+    "test:voice": "tsx scripts/test-voice.ts",
+    "test:consumer": "tsx scripts/test-consumer.ts",
+    "test": "npm run test:dedupe && npm run test:totp && npm run test:voice && npm run test:consumer && npm run test:e2e"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.97",
