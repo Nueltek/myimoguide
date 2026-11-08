@@ -2,6 +2,7 @@ import { Hono, type Context } from 'hono';
 import { asc, eq } from 'drizzle-orm';
 import { factCategoryEnum, stateFacts } from '../../db/schema';
 import { audit, isUniqueViolation, type Ctx } from '../context';
+import { canEdit } from '../access';
 import { Form, uniqueSlug, type Errors } from '../validate';
 import { FormPage, Grid, Provenance, Section, SelectField, TextArea, TextField } from '../forms';
 import { ConfidenceBadge, Icon, Shell, formatDate } from '../layout';
@@ -34,21 +35,23 @@ factsAdmin.get('/', async (c) => {
   const rows = await c.get('db').select().from(stateFacts).orderBy(asc(stateFacts.category), asc(stateFacts.topic));
 
   return c.html(
-    <Shell title="State facts" path="/admin/facts" email={c.get('user').email}>
+    <Shell title="State facts" path="/admin/facts" user={c.get('user')}>
       <Saved c={c} />
       <div class="toolbar">
         <p class="lede" style="margin:0">
           General knowledge, sent to users word for word. Open-ended questions go to web search instead.
         </p>
         <span class="spacer" />
-        <a class="btn primary" href="/admin/facts/new">
-          <Icon name="plus" /> New fact
-        </a>
+        {canEdit(c.get('user').role) ? (
+          <a class="btn primary" href="/admin/facts/new">
+            <Icon name="plus" /> New fact
+          </a>
+        ) : null}
       </div>
       <div class="panel">
         {rows.length === 0 ? (
           <div class="empty">
-            No facts yet. <a href="/admin/facts/new">Add the first one</a>.
+            No facts yet. {canEdit(c.get('user').role) ? <><a href="/admin/facts/new">Add the first one</a>.</> : null}
           </div>
         ) : (
           <table>
@@ -83,7 +86,7 @@ factsAdmin.get('/', async (c) => {
                   <td class="num t-dim">{formatDate(f.verifiedAt)}</td>
                   <td>
                     <a class="btn sm" href={`/admin/facts/${f.id}`}>
-                      Edit
+                      {canEdit(c.get('user').role) ? 'Edit' : 'View'}
                     </a>
                   </td>
                 </tr>
@@ -208,8 +211,9 @@ function renderForm(
   const isNew = s.mode === 'new';
 
   return c.html(
-    <Shell title={isNew ? 'New fact' : v.topic || 'Edit fact'} path="/admin/facts" email={c.get('user').email}>
+    <Shell title={isNew ? 'New fact' : v.topic || 'Edit fact'} path="/admin/facts" user={c.get('user')}>
       <FormPage
+        readOnly={!canEdit(c.get('user').role)}
         title={isNew ? 'Add a state fact' : 'Edit state fact'}
         back={{ href: '/admin/facts', label: 'All facts' }}
         action={isNew ? '/admin/facts/new' : `/admin/facts/${s.id}`}

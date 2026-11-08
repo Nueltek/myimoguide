@@ -1,4 +1,4 @@
-import { and, eq, gt, sql } from 'drizzle-orm';
+import { and, eq, gt, ne, sql } from 'drizzle-orm';
 import type { Db } from '../db/client';
 import { adminSessions, adminUsers } from '../db/schema';
 
@@ -106,10 +106,19 @@ async function sha256Hex(value: string): Promise<string> {
   return toHex(await crypto.subtle.digest('SHA-256', enc.encode(value)));
 }
 
+/** 256 random bits, hex. For session tokens and invitation links. */
+export function newToken(): string {
+  return toHex(crypto.getRandomValues(new Uint8Array(32)).buffer);
+}
+
+/** What is stored in place of a token: its SHA-256. */
+export const hashToken = sha256Hex;
+
 export interface SessionUser {
   id: string;
   email: string;
   role: string;
+  fullName: string | null;
 }
 
 export type SessionStage = 'enrolling' | 'pending' | 'full';
@@ -121,6 +130,8 @@ export interface ResolvedSession {
   failedAttempts: number;
   /** False until the user has confirmed an authenticator app. */
   totpEnabled: boolean;
+  /** When the second factor was last given on this session. */
+  confirmedAt: Date | null;
 }
 
 /** A partial session exists only to finish signing in. */
@@ -136,7 +147,7 @@ export async function createSession(
   meta: { ip?: string | undefined; userAgent?: string | undefined },
   stage: SessionStage = 'full',
 ): Promise<{ token: string; expiresAt: Date }> {
-  const token = toHex(crypto.getRandomValues(new Uint8Array(32)).buffer);
+  const token = newToken();
   const ttl = stage === 'full' ? SESSION_HOURS * 3_600_000 : PARTIAL_SESSION_MINUTES * 60_000;
   const expiresAt = new Date(Date.now() + ttl);
 
@@ -144,6 +155,8 @@ export async function createSession(
     userId,
     tokenHash: await sha256Hex(token),
     stage,
+    // Completing sign-in is itself a confirmation of the second factor.
+    confirmedAt: stage === 'full' ? new Date() : null,
     expiresAt,
     ipAddress: meta.ip ?? null,
     userAgent: meta.userAgent?.slice(0, 500) ?? null,
@@ -160,11 +173,13 @@ export async function resolveSession(db: Db, token: string | undefined): Promise
       id: adminUsers.id,
       email: adminUsers.email,
       role: adminUsers.role,
+      fullName: adminUsers.fullName,
       active: adminUsers.isActive,
       totpEnabledAt: adminUsers.totpEnabledAt,
       sessionId: adminSessions.id,
       stage: adminSessions.stage,
       failedAttempts: adminSessions.failedAttempts,
+      confirmedAt: adminSessions.confirmedAt,
     })
     .from(adminSessions)
     .innerJoin(adminUsers, eq(adminSessions.userId, adminUsers.id))
@@ -174,12 +189,61 @@ export async function resolveSession(db: Db, token: string | undefined): Promise
   const row = rows[0];
   if (!row || !row.active) return null;
   return {
-    user: { id: row.id, email: row.email, role: row.role },
+    user: { id: row.id, email: row.email, role: row.role, fullName: row.fullName },
     sessionId: row.sessionId,
     stage: (['enrolling', 'pending', 'full'].includes(row.stage) ? row.stage : 'pending') as SessionStage,
     failedAttempts: row.failedAttempts,
     totpEnabled: row.totpEnabledAt !== null,
+    confirmedAt: row.confirmedAt,
   };
+}
+
+/** Records that the second factor was just given again on this session. */
+export async function markConfirmed(db: Db, sessionId: string): Promise<void> {
+  await db
+    .update(adminSessions)
+    .set({ confirmedAt: new Date(), failedAttempts: 0 })
+    .where(eq(adminSessions.id, sessionId));
+}
+
+/**
+ * Ends every session a person has, optionally sparing the one in use.
+ * Used when access is removed or a credential changes: a session opened
+ * before the change must not outlive it.
+ */
+export async function destroyUserSessions(db: Db, userId: string, except?: string): Promise<number> {
+  const rows = await db
+    .delete(adminSessions)
+    .where(except ? and(eq(adminSessions.userId, userId), ne(adminSessions.id, except)) : eq(adminSessions.userId, userId))
+    .returning({ id: adminSessions.id });
+  return rows.length;
+}
+
+/**
+ * Length is what makes a password strong, and what compensates for the
+ * reduced KDF iteration count the platform imposes. A passphrase of three
+ * or four ordinary words clears this easily and is easier to remember
+ * than a short string of symbols.
+ */
+export const MIN_PASSWORD_LENGTH = 12;
+
+/** Why a chosen password is unacceptable, or null if it is fine. */
+export function passwordProblem(password: string, email: string): string | null {
+  if (password.length < MIN_PASSWORD_LENGTH) {
+    return `Your password must be at least ${MIN_PASSWORD_LENGTH} characters.`;
+  }
+  if (password.length > 200) return 'Use at most 200 characters.';
+  // The whole local part, and each name in it: "chiamaka.eze" rules out
+  // "chiamaka" too. Short fragments are ignored, so "eze" alone is allowed.
+  const local = email.split('@')[0]?.toLowerCase() ?? '';
+  const lowered = password.toLowerCase();
+  const parts = [local, ...local.split(/[._+-]+/)].filter((p) => p.length >= 4);
+  if (parts.some((p) => lowered.includes(p))) return 'Do not include your name or email address in your password.';
+  if (/^(.)\1+$/.test(password)) return 'Do not use one character repeated.';
+  if (['password', 'myimoguide', 'imostate', '123456789', 'qwertyuiop'].some((w) => lowered.includes(w) && lowered.length < w.length + 6)) {
+    return 'That password is too easy to guess. Choose something less predictable.';
+  }
+  return null;
 }
 
 /**

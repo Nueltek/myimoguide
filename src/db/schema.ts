@@ -1,5 +1,6 @@
 import {
   boolean,
+  check,
   doublePrecision,
   index,
   integer,
@@ -14,6 +15,7 @@ import {
   varchar,
   vector,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 
 /**
  * The architectural rule this schema exists to enforce:
@@ -301,6 +303,13 @@ export const adminSessions = pgTable('admin_sessions', {
   stage: varchar('stage', { length: 16 }).notNull().default('full'),
   /** Wrong 2FA codes on this session. Five ends it. */
   failedAttempts: integer('failed_attempts').notNull().default(0),
+  /**
+   * When this session last proved the second factor: at sign-in, and again
+   * each time the user re-enters a code for a sensitive action (managing
+   * accounts, new recovery codes). Those actions need it to be recent, so
+   * a laptop left signed in cannot be used to add an account.
+   */
+  confirmedAt: timestamp('confirmed_at', { withTimezone: true }),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
   ipAddress: varchar('ip_address', { length: 45 }),
   userAgent: text('user_agent'),
@@ -314,7 +323,7 @@ export const adminSessions = pgTable('admin_sessions', {
 export const adminUsers = pgTable('admin_users', {
   id: uuid('id').primaryKey().defaultRandom(),
   email: varchar('email', { length: 160 }).notNull(),
-  /** argon2id. Never bcrypt, never a fast hash. */
+  /** PBKDF2-SHA256, salted, at the platform's iteration cap. See src/admin/auth.ts. */
   passwordHash: text('password_hash').notNull(),
   /** Sealed with AES-GCM; see src/admin/secretbox.ts. Never stored in plain text. */
   totpSecret: text('totp_secret'),
@@ -329,11 +338,48 @@ export const adminUsers = pgTable('admin_users', {
   totpLastStep: integer('totp_last_step'),
   /** SHA-256 of each unused recovery code. A used code is removed. */
   recoveryCodeHashes: text('recovery_code_hashes').array().notNull().default([]),
+  /** administrator | editor | viewer. See src/admin/access.ts for what each may do. */
   role: varchar('role', { length: 16 }).notNull().default('editor'),
+  /** As the person gave it when accepting their invitation. Shown in the dashboard and audit views. */
+  fullName: varchar('full_name', { length: 120 }),
+  /** Deactivated, never deleted: the audit log must keep resolving to a person. */
   isActive: boolean('is_active').notNull().default(true),
+  deactivatedAt: timestamp('deactivated_at', { withTimezone: true }),
   lastLoginAt: timestamp('last_login_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-}, (t) => [uniqueIndex('admin_users_email_idx').on(t.email)]);
+}, (t) => [
+  uniqueIndex('admin_users_email_idx').on(t.email),
+  check('admin_users_role_check', sql`${t.role} in ('administrator', 'editor', 'viewer')`),
+]);
+
+/**
+ * Invitations to the dashboard.
+ *
+ * An administrator invites by email and role; the system issues a link
+ * that works once and expires. The invitee chooses their own password and
+ * sets up 2FA in the same visit, so nobody ever knows anyone else's
+ * password and there is no temporary one for someone else to use first.
+ *
+ * Only the SHA-256 of the link's token is stored. A database leak yields
+ * no usable invitations.
+ */
+export const adminInvites = pgTable('admin_invites', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  email: varchar('email', { length: 160 }).notNull(),
+  role: varchar('role', { length: 16 }).notNull(),
+  tokenHash: varchar('token_hash', { length: 64 }).notNull(),
+  invitedBy: uuid('invited_by').references(() => adminUsers.id, { onDelete: 'set null' }),
+  invitedByEmail: varchar('invited_by_email', { length: 160 }).notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  acceptedAt: timestamp('accepted_at', { withTimezone: true }),
+  acceptedUserId: uuid('accepted_user_id').references(() => adminUsers.id, { onDelete: 'set null' }),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex('admin_invites_token_idx').on(t.tokenHash),
+  index('admin_invites_email_idx').on(t.email),
+  check('admin_invites_role_check', sql`${t.role} in ('administrator', 'editor', 'viewer')`),
+]);
 
 /**
  * Append-only audit log. Does double duty: it is a real security control,

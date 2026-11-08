@@ -2,6 +2,7 @@ import { Hono, type Context } from 'hono';
 import { asc, eq } from 'drizzle-orm';
 import { agencies, services } from '../../db/schema';
 import { audit, isUniqueViolation, type Ctx } from '../context';
+import { canEdit } from '../access';
 import { Form, uniqueSlug, type Errors } from '../validate';
 import { FormPage, Grid, Provenance, Section, SelectField, TextArea, TextField } from '../forms';
 import { ConfidenceBadge, Icon, Shell, formatDate } from '../layout';
@@ -55,21 +56,23 @@ servicesAdmin.get('/', async (c) => {
     .orderBy(asc(services.name));
 
   return c.html(
-    <Shell title="Services" path="/admin/services" email={c.get('user').email}>
+    <Shell title="Services" path="/admin/services" user={c.get('user')}>
       <Saved c={c} />
       <div class="toolbar">
         <p class="lede" style="margin:0">
           What the assistant answers from. A blank fee is never guessed — it says the fee is not confirmed.
         </p>
         <span class="spacer" />
-        <a class="btn primary" href="/admin/services/new">
-          <Icon name="plus" /> New service
-        </a>
+        {canEdit(c.get('user').role) ? (
+          <a class="btn primary" href="/admin/services/new">
+            <Icon name="plus" /> New service
+          </a>
+        ) : null}
       </div>
       <div class="panel">
         {rows.length === 0 ? (
           <div class="empty">
-            No services yet. <a href="/admin/services/new">Add the first one</a>.
+            No services yet. {canEdit(c.get('user').role) ? <><a href="/admin/services/new">Add the first one</a>.</> : null}
           </div>
         ) : (
           <table>
@@ -106,7 +109,7 @@ servicesAdmin.get('/', async (c) => {
                   <td class="num t-dim">{formatDate(s.verifiedAt)}</td>
                   <td>
                     <a class="btn sm" href={`/admin/services/${s.id}`}>
-                      Edit
+                      {canEdit(c.get('user').role) ? 'Edit' : 'View'}
                     </a>
                   </td>
                 </tr>
@@ -261,8 +264,9 @@ async function renderForm(
   const isNew = s.mode === 'new';
 
   return c.html(
-    <Shell title={isNew ? 'New service' : v.name || 'Edit service'} path="/admin/services" email={c.get('user').email}>
+    <Shell title={isNew ? 'New service' : v.name || 'Edit service'} path="/admin/services" user={c.get('user')}>
       <FormPage
+        readOnly={!canEdit(c.get('user').role)}
         title={isNew ? 'Add a service' : 'Edit service'}
         back={{ href: '/admin/services', label: 'All services' }}
         action={isNew ? '/admin/services/new' : `/admin/services/${s.id}`}

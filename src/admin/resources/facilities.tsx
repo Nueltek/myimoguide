@@ -2,6 +2,7 @@ import { Hono, type Context } from 'hono';
 import { and, asc, eq, type SQL } from 'drizzle-orm';
 import { facilities, facilityTypeEnum, lgaEnum } from '../../db/schema';
 import { audit, isUniqueViolation, type Ctx } from '../context';
+import { canEdit } from '../access';
 import { Form, type Errors } from '../validate';
 import { FormPage, Grid, Provenance, Section, SelectField, TextArea, TextField } from '../forms';
 import { ConfidenceBadge, Icon, Shell, formatDate } from '../layout';
@@ -61,7 +62,7 @@ facilitiesAdmin.get('/', async (c) => {
   const staleBefore = Date.now() - STALE_DAYS * 86_400_000;
 
   return c.html(
-    <Shell title="Facilities" path="/admin/facilities" email={c.get('user').email}>
+    <Shell title="Facilities" path="/admin/facilities" user={c.get('user')}>
       <Saved c={c} />
       <form class="toolbar" method="get" action="/admin/facilities">
         <select name="type" aria-label="Filter by type">
@@ -89,9 +90,11 @@ facilitiesAdmin.get('/', async (c) => {
           </a>
         ) : null}
         <span class="spacer" />
-        <a class="btn primary" href="/admin/facilities/new">
-          <Icon name="plus" /> New facility
-        </a>
+        {canEdit(c.get('user').role) ? (
+          <a class="btn primary" href="/admin/facilities/new">
+            <Icon name="plus" /> New facility
+          </a>
+        ) : null}
       </form>
 
       <div class="panel">
@@ -104,7 +107,7 @@ facilitiesAdmin.get('/', async (c) => {
         {rows.length === 0 ? (
           <div class="empty">
             {type || lga ? 'No facilities match this filter.' : 'No facilities yet.'}{' '}
-            <a href="/admin/facilities/new">Add one</a>.
+            {canEdit(c.get('user').role) ? <><a href="/admin/facilities/new">Add one</a>.</> : null}
           </div>
         ) : (
           <table>
@@ -153,7 +156,7 @@ facilitiesAdmin.get('/', async (c) => {
                     </td>
                     <td>
                       <a class="btn sm" href={`/admin/facilities/${f.id}`}>
-                        Edit
+                        {canEdit(c.get('user').role) ? 'Edit' : 'View'}
                       </a>
                     </td>
                   </tr>
@@ -296,8 +299,9 @@ function renderForm(
   const isNew = s.mode === 'new';
 
   return c.html(
-    <Shell title={isNew ? 'New facility' : v.name || 'Edit facility'} path="/admin/facilities" email={c.get('user').email}>
+    <Shell title={isNew ? 'New facility' : v.name || 'Edit facility'} path="/admin/facilities" user={c.get('user')}>
       <FormPage
+        readOnly={!canEdit(c.get('user').role)}
         title={isNew ? 'Add a facility' : 'Edit facility'}
         back={{ href: '/admin/facilities', label: 'All facilities' }}
         action={isNew ? '/admin/facilities/new' : `/admin/facilities/${s.id}`}

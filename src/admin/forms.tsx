@@ -47,8 +47,8 @@ const Label: FC<{ name: string; label: string; required?: boolean | undefined }>
 );
 
 export const TextField: FC<
-  Base & { value?: string | number | null | undefined; type?: string; maxLength?: number; placeholder?: string; inputmode?: 'decimal' | 'email' | 'numeric' | 'tel' | 'text' | 'url' }
-> = ({ name, label, hint, error, required, value, type = 'text', maxLength, placeholder, inputmode }) => (
+  Base & { value?: string | number | null | undefined; type?: string; maxLength?: number; placeholder?: string; inputmode?: 'decimal' | 'email' | 'numeric' | 'tel' | 'text' | 'url'; autocomplete?: string }
+> = ({ name, label, hint, error, required, value, type = 'text', maxLength, placeholder, inputmode, autocomplete }) => (
   <div class={`field${error ? ' has-error' : ''}`}>
     <Label name={name} label={label} required={required} />
     <input
@@ -60,6 +60,7 @@ export const TextField: FC<
       maxlength={maxLength}
       placeholder={placeholder}
       inputmode={inputmode}
+      autocomplete={autocomplete}
       aria-invalid={error ? 'true' : undefined}
       aria-describedby={describedBy(name, hint, error)}
     />
@@ -243,8 +244,10 @@ export const FormPage: FC<{
   errors: Errors;
   labels: Record<string, string>;
   footnote?: string | undefined;
+  /** For a role that may look but not change: fields disabled, no save button. */
+  readOnly?: boolean;
   children: Child;
-}> = ({ title, back, action, submit, busy, errors, labels, footnote, children }) => (
+}> = ({ title, back, action, submit, busy, errors, labels, footnote, readOnly = false, children }) => (
   <>
     <a class="btn ghost" href={back.href} style="margin-bottom:16px">
       <Icon name="back" /> {back.label}
@@ -255,13 +258,28 @@ export const FormPage: FC<{
         <div class="panel-h">
           <h2>{title}</h2>
         </div>
-        <div class="form-body">{children}</div>
+        {readOnly ? (
+          <div class="flash" role="note" style="margin:16px 20px 0">
+            <Icon name="lock" /> Your role can view this record but not change it.
+          </div>
+        ) : null}
+        <div class="form-body">
+          {readOnly ? (
+            <fieldset disabled style="border:0;margin:0;padding:0;min-width:0">
+              {children}
+            </fieldset>
+          ) : (
+            children
+          )}
+        </div>
         <div class="form-foot">
-          <button class="btn primary" type="submit" data-busy-label={busy}>
-            <Icon name="check" /> {submit}
-          </button>
+          {readOnly ? null : (
+            <button class="btn primary" type="submit" data-busy-label={busy}>
+              <Icon name="check" /> {submit}
+            </button>
+          )}
           <a class="btn ghost" href={back.href}>
-            Cancel
+            {readOnly ? 'Back' : 'Cancel'}
           </a>
           {footnote ? <span class="t-dim" style="margin-left:auto">{footnote}</span> : null}
         </div>

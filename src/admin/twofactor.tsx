@@ -125,9 +125,36 @@ twoFactor.post('/setup', async (c) => {
 twoFactor.get('/', (c) => c.html(<ChallengePage />));
 
 twoFactor.post('/', async (c) => {
+  const input = String((await c.req.formData()).get('code') ?? '');
+  const result = await checkSecondFactor(c, input);
+  if (result instanceof Response) return result;
+  if (!result.ok) return failed(c, (remaining) => <ChallengePage error={codeError(result.reason, remaining)} />);
+
+  const user = c.get('user');
+  const { token, expiresAt } = await promoteToFull(c.get('db'), c.get('session').sessionId, user.id, meta(c));
+  await audit(c, 'login', 'admin_users', user.id, null, { method: result.method === 'totp' ? 'totp' : 'recovery_code' });
+  c.header('Set-Cookie', sessionCookie(token, expiresAt));
+  return c.redirect(result.method === 'recovery' ? `/admin?recovery=${result.remaining}` : '/admin');
+});
+
+/* ------------------------------------------------------------------ */
+/* The check itself, shared by sign-in and re-confirmation             */
+/* ------------------------------------------------------------------ */
+
+export type CodeCheck =
+  | { ok: true; method: 'totp' }
+  | { ok: true; method: 'recovery'; remaining: number }
+  | { ok: false; reason: 'format' | 'mismatch' | 'replay' | 'recovery' };
+
+/**
+ * Checks an app code or a recovery code for the signed-in user, and
+ * consumes it if valid. Returns a Response only when the check cannot be
+ * made at all: the encryption key is missing, or no app is set up.
+ */
+export async function checkSecondFactor(c: Context<Ctx>, raw: string): Promise<CodeCheck | Response> {
   const db = c.get('db');
   const user = c.get('user');
-  const input = String((await c.req.formData()).get('code') ?? '').trim();
+  const input = raw.trim();
 
   if (looksLikeRecoveryCode(input)) {
     const hash = await hashRecoveryCode(input);
@@ -138,14 +165,9 @@ twoFactor.post('/', async (c) => {
       .set({ recoveryCodeHashes: sql`array_remove(${adminUsers.recoveryCodeHashes}, ${hash})` })
       .where(and(eq(adminUsers.id, user.id), sql`${hash} = any(${adminUsers.recoveryCodeHashes})`))
       .returning({ remaining: sql<number>`cardinality(${adminUsers.recoveryCodeHashes})` });
-
-    if (!used) return failed(c, (remaining) => <ChallengePage error={codeError('recovery', remaining)} />);
-
-    const { token, expiresAt } = await promoteToFull(db, c.get('session').sessionId, user.id, meta(c));
+    if (!used) return { ok: false, reason: 'recovery' };
     await audit(c, 'recovery_code_used', 'admin_users', user.id, null, { remaining: used.remaining });
-    await audit(c, 'login', 'admin_users', user.id, null, { method: 'recovery_code' });
-    c.header('Set-Cookie', sessionCookie(token, expiresAt));
-    return c.redirect(`/admin?recovery=${used.remaining}`);
+    return { ok: true, method: 'recovery', remaining: used.remaining };
   }
 
   const key = await keyOrExplain(c);
@@ -159,7 +181,7 @@ twoFactor.post('/', async (c) => {
   if (!row?.secret) return c.redirect('/admin/2fa/setup');
 
   const result = await verifyTotp(await open(row.secret, key, user.id), input, row.lastStep);
-  if (!result.ok) return failed(c, (remaining) => <ChallengePage error={codeError(result.reason, remaining)} />);
+  if (!result.ok) return { ok: false, reason: result.reason };
 
   // Record the step only if it is newer than the last one. If a second
   // request with the same code got here first, this updates nothing and
@@ -174,22 +196,19 @@ twoFactor.post('/', async (c) => {
       ),
     )
     .returning({ id: adminUsers.id });
-  if (!claimed) return failed(c, (remaining) => <ChallengePage error={codeError('replay', remaining)} />);
-
-  const { token, expiresAt } = await promoteToFull(db, c.get('session').sessionId, user.id, meta(c));
-  await audit(c, 'login', 'admin_users', user.id, null, { method: 'totp' });
-  c.header('Set-Cookie', sessionCookie(token, expiresAt));
-  return c.redirect('/admin');
-});
+  if (!claimed) return { ok: false, reason: 'replay' };
+  return { ok: true, method: 'totp' };
+}
 
 /* ------------------------------------------------------------------ */
 
 /**
- * A wrong code. Counted against this sign-in; at the limit the partial
- * session is destroyed and the password must be entered again. A 6-digit
+ * A wrong code. Counted against this session; at the limit the session
+ * is destroyed and the password must be entered again. This applies to
+ * re-confirmation too, so a signed-in session cannot be used to guess. A 6-digit
  * code has a million values, and without a cap it is guessable.
  */
-async function failed(c: Context<Ctx>, page: (remaining: number) => HtmlEscapedString | Promise<HtmlEscapedString>) {
+export async function failed(c: Context<Ctx>, page: (remaining: number) => HtmlEscapedString | Promise<HtmlEscapedString>) {
   const db = c.get('db');
   const session = c.get('session');
   const n = await recordFailedCode(db, session.sessionId);
@@ -204,7 +223,7 @@ async function failed(c: Context<Ctx>, page: (remaining: number) => HtmlEscapedS
   return c.html(page(MAX_CODE_ATTEMPTS - n), 422);
 }
 
-function codeError(reason: 'format' | 'mismatch' | 'replay' | 'recovery', remaining: number): string {
+export function codeError(reason: 'format' | 'mismatch' | 'replay' | 'recovery', remaining: number): string {
   const left = remaining === 1 ? '1 attempt left' : `${remaining} attempts left`;
   switch (reason) {
     case 'format':
@@ -223,7 +242,7 @@ function codeError(reason: 'format' | 'mismatch' | 'replay' | 'recovery', remain
  * plainly on the page instead of failing with a generic error halfway
  * through someone's sign-in.
  */
-async function keyOrExplain(c: Context<Ctx>): Promise<CryptoKey | Response> {
+export async function keyOrExplain(c: Context<Ctx>): Promise<CryptoKey | Response> {
   try {
     return await loadKey(c.env.TOTP_ENCRYPTION_KEY);
   } catch (err) {
@@ -346,7 +365,16 @@ const ChallengePage = ({ error }: { error?: string }) => (
   </AuthCard>
 );
 
-const RecoveryCodesPage = ({ codes, email }: { codes: string[]; email: string }) => {
+export const RecoveryCodesPage = ({
+  codes,
+  email,
+  replaced = false,
+}: {
+  codes: string[];
+  email: string;
+  /** True when these replace an earlier set, rather than finishing setup. */
+  replaced?: boolean;
+}) => {
   const file = [
     'MyImoGuide administration — recovery codes',
     `Account: ${email}`,
@@ -361,8 +389,10 @@ const RecoveryCodesPage = ({ codes, email }: { codes: string[]; email: string })
     <AuthCard title="Save your recovery codes" wide>
       <h1 class="auth-title">Save your recovery codes</h1>
       <p class="auth-lede">
-        Two-step sign-in is on. If you ever lose your phone, each of these codes will sign you in once.
-        <strong> They are shown only now.</strong>
+        {replaced
+          ? 'Your new recovery codes are below. The old ones no longer work. '
+          : 'Two-step sign-in is on. If you ever lose your phone, each of these codes will sign you in once. '}
+        <strong>They are shown only now.</strong>
       </p>
       <div class="warn-box">
         Keep them somewhere safe and offline — printed and filed, or in a password manager. Anyone who has these codes
@@ -381,7 +411,7 @@ const RecoveryCodesPage = ({ codes, email }: { codes: string[]; email: string })
           Print
         </button>
       </div>
-      <a class="btn primary no-print" href="/admin" style="width:100%;justify-content:center">
+      <a class="btn primary no-print" href={replaced ? '/admin/account?saved=codes' : '/admin'} style="width:100%;justify-content:center">
         I have saved them — continue
       </a>
     </AuthCard>

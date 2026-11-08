@@ -2,6 +2,7 @@ import { Hono, type Context } from 'hono';
 import { asc, eq, sql } from 'drizzle-orm';
 import { agencies, lgaEnum, services } from '../../db/schema';
 import { audit, isUniqueViolation, type Ctx } from '../context';
+import { canEdit } from '../access';
 import { Form, uniqueSlug, type Errors } from '../validate';
 import { FormPage, Grid, Provenance, Section, SelectField, TextArea, TextField } from '../forms';
 import { ConfidenceBadge, Icon, Shell, formatDate } from '../layout';
@@ -58,21 +59,23 @@ agenciesAdmin.get('/', async (c) => {
     .orderBy(asc(agencies.name));
 
   return c.html(
-    <Shell title="Agencies" path="/admin/agencies" email={c.get('user').email}>
+    <Shell title="Agencies" path="/admin/agencies" user={c.get('user')}>
       <Saved c={c} />
       <div class="toolbar">
         <p class="lede" style="margin:0">
           Ministries and offices. The assistant answers "who handles this?" and "who heads that?" from here.
         </p>
         <span class="spacer" />
-        <a class="btn primary" href="/admin/agencies/new">
-          <Icon name="plus" /> New agency
-        </a>
+        {canEdit(c.get('user').role) ? (
+          <a class="btn primary" href="/admin/agencies/new">
+            <Icon name="plus" /> New agency
+          </a>
+        ) : null}
       </div>
       <div class="panel">
         {rows.length === 0 ? (
           <div class="empty">
-            No agencies yet. <a href="/admin/agencies/new">Add the first one</a>.
+            No agencies yet. {canEdit(c.get('user').role) ? <><a href="/admin/agencies/new">Add the first one</a>.</> : null}
           </div>
         ) : (
           <table>
@@ -120,7 +123,7 @@ agenciesAdmin.get('/', async (c) => {
                   <td class="num t-dim">{formatDate(a.verifiedAt)}</td>
                   <td>
                     <a class="btn sm" href={`/admin/agencies/${a.id}`}>
-                      Edit
+                      {canEdit(c.get('user').role) ? 'Edit' : 'View'}
                     </a>
                   </td>
                 </tr>
@@ -267,8 +270,9 @@ function renderForm(
   const isNew = s.mode === 'new';
 
   return c.html(
-    <Shell title={isNew ? 'New agency' : v.name || 'Edit agency'} path="/admin/agencies" email={c.get('user').email}>
+    <Shell title={isNew ? 'New agency' : v.name || 'Edit agency'} path="/admin/agencies" user={c.get('user')}>
       <FormPage
+        readOnly={!canEdit(c.get('user').role)}
         title={isNew ? 'Add an agency' : 'Edit agency'}
         back={{ href: '/admin/agencies', label: 'All agencies' }}
         action={isNew ? '/admin/agencies/new' : `/admin/agencies/${s.id}`}

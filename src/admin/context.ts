@@ -18,7 +18,17 @@ export type AuditAction =
   | 'twofa_enabled'
   | 'twofa_failed'
   | 'twofa_locked'
-  | 'recovery_code_used';
+  | 'recovery_code_used'
+  | 'user_invited'
+  | 'invite_revoked'
+  | 'user_joined'
+  | 'role_changed'
+  | 'user_deactivated'
+  | 'user_reactivated'
+  | 'twofa_reset'
+  | 'sessions_ended'
+  | 'password_changed'
+  | 'recovery_codes_replaced';
 
 /**
  * Append-only audit entry. Never updated, never deleted.

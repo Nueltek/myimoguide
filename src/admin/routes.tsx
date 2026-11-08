@@ -13,7 +13,12 @@ import {
   verifyPassword,
   type ResolvedSession,
 } from './auth';
-import { ConfidenceBadge, Icon, LoginPage, Shell, formatDate, formatDateTime } from './layout';
+import { ActionBadge, ConfidenceBadge, Forbidden, Icon, LoginPage, Shell, formatDate, formatDateTime } from './layout';
+import { ROLE_LABELS, asRole, isFresh, needsConfirmation, permits, returnPathFor } from './access';
+import { account } from './account';
+import { confirm } from './confirm';
+import { invite } from './invite';
+import { users } from './users';
 
 import { audit, type Ctx } from './context';
 import { isThrottled, recordFailedLogin } from './throttle';
@@ -68,7 +73,10 @@ admin.use('*', async (c, next) => {
 
 async function gate(c: Context<Ctx>, next: Next): Promise<void> {
   const path = new URL(c.req.url).pathname;
-  if (path === '/admin/login') return next();
+  const method = c.req.method;
+  // The only pages reachable without a session: signing in, and accepting
+  // an invitation, whose link carries its own single-use credential.
+  if (path === '/admin/login' || path.startsWith('/admin/invite/')) return next();
 
   const session = await resolveSession(c.get('db'), getCookie(c, SESSION_COOKIE));
   if (!session) {
@@ -83,6 +91,17 @@ async function gate(c: Context<Ctx>, next: Next): Promise<void> {
   }
   c.set('session', session);
   c.set('user', session.user);
+
+  if (session.stage === 'full' && !permits(session.user.role, method, path)) {
+    c.res = await c.html(<Forbidden user={session.user} />, 403);
+    return;
+  }
+
+  if (session.stage === 'full' && needsConfirmation(method, path) && !isFresh(session.confirmedAt)) {
+    const next = returnPathFor(method, path);
+    c.res = c.redirect(`/admin/confirm?next=${encodeURIComponent(next)}${method === 'POST' ? '&repeat=1' : ''}`);
+    return;
+  }
   return next();
 }
 
@@ -154,6 +173,10 @@ admin.post('/logout', async (c) => {
 });
 
 admin.route('/2fa', twoFactor);
+admin.route('/invite', invite);
+admin.route('/confirm', confirm);
+admin.route('/account', account);
+admin.route('/users', users);
 
 /* ------------------------------------------------------------------ */
 
@@ -200,7 +223,7 @@ admin.get('/', async (c) => {
   const left = recovery === undefined ? null : Number(recovery);
 
   return c.html(
-    <Shell title="Overview" path="/admin" email={user.email}>
+    <Shell title="Overview" path="/admin" user={user}>
       {left !== null && Number.isFinite(left) ? (
         <div class="flash warn" role="status">
           <Icon name="alert" /> You signed in with a recovery code. That code no longer works;{' '}
@@ -294,7 +317,7 @@ admin.get('/queries', async (c) => {
     .limit(200);
 
   return c.html(
-    <Shell title="Questions" path="/admin/queries" email={c.get('user').email}>
+    <Shell title="Questions" path="/admin/queries" user={c.get('user')}>
       <div style="display:flex;gap:8px;margin-bottom:18px;flex-wrap:wrap">
         <a class="btn" href="/admin/queries">All</a>
         <a class="btn" href="/admin/queries?tier=verified">Verified</a>
@@ -352,7 +375,7 @@ admin.get('/audit', async (c) => {
     .limit(200);
 
   return c.html(
-    <Shell title="Audit log" path="/admin/audit" email={c.get('user').email}>
+    <Shell title="Audit log" path="/admin/audit" user={c.get('user')}>
       <div class="panel">
         <div class="panel-h">
           <div>
@@ -382,7 +405,7 @@ admin.get('/audit', async (c) => {
                   <td class="t-dim">
                     {a.tableName}
                     {a.rowId ? ` · ${a.rowId.slice(0, 8)}` : ''}
-                    {reasonOf(a.after) ? ` · ${reasonOf(a.after)}` : ''}
+                    {detailOf(a.before, a.after) ? ` · ${detailOf(a.before, a.after)}` : ''}
                   </td>
                   <td class="num t-dim">{a.ipAddress ?? '—'}</td>
                 </tr>
@@ -432,31 +455,20 @@ const TierBadge = ({ tier }: { tier: string | null }) => {
   return <span class={`badge ${v.cls}`}>{v.label}</span>;
 };
 
-const ACTIONS: Record<string, { cls: string; label: string }> = {
-  create: { cls: 'ok', label: 'Created' },
-  update: { cls: 'muted', label: 'Updated' },
-  login: { cls: 'ok', label: 'Signed in' },
-  logout: { cls: 'muted', label: 'Signed out' },
-  login_failed: { cls: 'bad', label: 'Sign-in failed' },
-  twofa_enabled: { cls: 'ok', label: '2FA set up' },
-  twofa_failed: { cls: 'warn', label: 'Wrong code' },
-  twofa_locked: { cls: 'bad', label: 'Locked out' },
-  twofa_reset: { cls: 'warn', label: '2FA reset' },
-  recovery_code_used: { cls: 'warn', label: 'Recovery code' },
-};
-
-const ActionBadge = ({ action }: { action: string }) => {
-  const v = ACTIONS[action] ?? { cls: 'muted', label: action };
-  return <span class={`badge ${v.cls}`}>{v.label}</span>;
-};
-
 const REASONS: Record<string, string> = {
   unknown_account: 'no such account',
   inactive_account: 'account disabled',
   wrong_password: 'wrong password',
+  wrong_current_password: 'wrong current password, on the account page',
 };
 
-function reasonOf(after: unknown): string | null {
-  const r = (after as { reason?: unknown } | null)?.reason;
-  return typeof r === 'string' ? (REASONS[r] ?? r) : null;
+/** One line of context for an audit row, where the action alone does not say enough. */
+function detailOf(before: unknown, after: unknown): string | null {
+  const b = (before ?? {}) as Record<string, unknown>;
+  const a = (after ?? {}) as Record<string, unknown>;
+  if (typeof a.reason === 'string') return REASONS[a.reason] ?? a.reason;
+  const role = (v: unknown) => (typeof v === 'string' ? (ROLE_LABELS[asRole(v) ?? 'viewer'] ?? v) : '');
+  if (typeof b.role === 'string' && typeof a.role === 'string') return `${role(b.role)} → ${role(a.role)}`;
+  if (typeof a.email === 'string' && typeof a.role === 'string') return `${a.email} as ${role(a.role)}`;
+  return null;
 }

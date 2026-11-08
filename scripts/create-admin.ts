@@ -4,6 +4,16 @@
  *   $env:DATABASE_URL='postgresql://...'
  *   npx tsx scripts/create-admin.ts you@example.com 'a long passphrase'
  *   npx tsx scripts/create-admin.ts you@example.com --reset-2fa
+ *   npx tsx scripts/create-admin.ts official@imostate.gov.ng --name "Ada Okafor" --role administrator
+ *
+ * This script is for the first administrators at handover, and for break-
+ * glass recovery if every administrator is locked out. Day to day, people
+ * are invited from the dashboard's Users page instead — that way each new
+ * account is created by a named administrator, on the record, and chooses
+ * its own password.
+ *
+ * New accounts default to administrator. --role sets editor or viewer;
+ * on an existing account it changes the role.
  *
  * Pass the password as an argument only on your own machine — it lands in
  * shell history. Omit it and one is generated and printed once.
@@ -17,9 +27,8 @@ import { neon } from '@neondatabase/serverless';
 import { drizzle } from 'drizzle-orm/neon-http';
 import { eq } from 'drizzle-orm';
 import { adminSessions, adminUsers, auditLog } from '../src/db/schema';
-import { hashPassword } from '../src/admin/auth';
-
-const MIN_LENGTH = 14;
+import { hashPassword, passwordProblem } from '../src/admin/auth';
+import { ROLES, asRole } from '../src/admin/access';
 
 async function main() {
   const url = process.env.DATABASE_URL;
@@ -27,11 +36,20 @@ async function main() {
 
   const args = process.argv.slice(2);
   const reset2fa = args.includes('--reset-2fa');
-  const positional = args.filter((a: string) => !a.startsWith('--'));
+  const flag = (name: string): string | undefined => {
+    const i = args.indexOf(name);
+    return i >= 0 ? args[i + 1] : undefined;
+  };
+  const roleArg = flag('--role');
+  const nameArg = flag('--name')?.trim();
+  if (roleArg !== undefined && !asRole(roleArg)) throw new Error(`--role must be one of: ${ROLES.join(', ')}`);
+  const role = asRole(roleArg);
+  // Everything that is not a flag or a flag's value.
+  const positional = args.filter((a: string, i: number) => !a.startsWith('--') && !['--role', '--name'].includes(args[i - 1] ?? ''));
 
   const email = positional[0]?.trim().toLowerCase();
   if (!email || !email.includes('@')) {
-    throw new Error('Usage: tsx scripts/create-admin.ts <email> [password] | <email> --reset-2fa');
+    throw new Error('Usage: tsx scripts/create-admin.ts <email> [password] [--role administrator|editor|viewer] [--name "Full Name"] | <email> --reset-2fa');
   }
 
   const db = drizzle(neon(url), { casing: 'snake_case' });
@@ -68,21 +86,23 @@ async function main() {
   const supplied = positional[1];
   const password = supplied ?? generate();
 
-  if (password.length < MIN_LENGTH) {
-    throw new Error(`Password must be at least ${MIN_LENGTH} characters.`);
-  }
+  const problem = passwordProblem(password, email);
+  if (problem) throw new Error(problem);
 
   const passwordHash = await hashPassword(password);
 
   if (existing) {
-    await db.update(adminUsers).set({ passwordHash, isActive: true }).where(eq(adminUsers.id, existing.id));
+    await db
+      .update(adminUsers)
+      .set({ passwordHash, isActive: true, deactivatedAt: null, ...(role ? { role } : {}), ...(nameArg ? { fullName: nameArg } : {}) })
+      .where(eq(adminUsers.id, existing.id));
     // A password reset ends every session: if the reset is because the
     // old one leaked, a session opened with it must not survive.
     await db.delete(adminSessions).where(eq(adminSessions.userId, existing.id));
-    console.log(`Password reset for ${email}. All their sessions have been ended.`);
+    console.log(`Password reset for ${email}${role ? `, role set to ${role}` : ''}. All their sessions have been ended.`);
   } else {
-    await db.insert(adminUsers).values({ email, passwordHash, role: 'admin' });
-    console.log(`Created ${email}. They will set up two-step sign-in at first sign-in.`);
+    await db.insert(adminUsers).values({ email, passwordHash, role: role ?? 'administrator', fullName: nameArg ?? null });
+    console.log(`Created ${email} as ${role ?? 'administrator'}. They will set up two-step sign-in at first sign-in.`);
   }
 
   if (!supplied) {

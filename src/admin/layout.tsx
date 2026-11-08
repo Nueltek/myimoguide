@@ -1,5 +1,7 @@
 import type { FC, PropsWithChildren } from 'hono/jsx';
 import { raw } from 'hono/html';
+import { ROLE_LABELS, asRole, withArticle } from './access';
+import type { SessionUser } from './auth';
 
 /**
  * The dashboard shell and its design system.
@@ -63,6 +65,30 @@ h1{font-size:20px} h2{font-size:16px} h3{font-size:14px}
 .top{display:flex;align-items:center;justify-content:space-between;gap:16px;
   padding:14px 28px;background:var(--surface);border-bottom:1px solid var(--line)}
 .top-meta{font-size:12.5px;color:var(--ink-500)}
+.who{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--ink-700);text-decoration:none;padding:5px 8px;border-radius:6px}
+.who:hover{background:#F1F3F2}
+.who .role{font-size:11px;color:var(--ink-500);border:1px solid var(--line-strong);border-radius:999px;padding:1px 7px}
+.nav-sep{height:1px;background:rgba(255,255,255,.08);margin:10px 8px}
+.link-box{display:flex;gap:8px;align-items:stretch;margin:4px 0 14px}
+.link-box input{flex:1;font-family:var(--mono);font-size:12.5px;background:#F7F8F7}
+.kv{display:grid;grid-template-columns:170px 1fr;gap:10px 18px;font-size:13.5px;margin:0}
+.kv dt{color:var(--ink-500)}
+.kv dd{margin:0;color:var(--ink-900)}
+.danger-zone{border-top:1px solid var(--line);padding-top:16px;margin-top:4px}
+.action-row{display:flex;align-items:flex-start;gap:16px;padding:14px 0;border-bottom:1px solid var(--line)}
+.action-row:last-child{border-bottom:0}
+.action-row .what{flex:1}
+.action-row .what strong{display:block;font-size:13.5px;margin-bottom:2px}
+.action-row .what span{font-size:12.5px;color:var(--ink-500)}
+.btn.danger{color:var(--red-600);border-color:#F0C7C2}
+.btn.danger:hover{background:var(--red-50)}
+.role-options{display:grid;gap:8px;margin:2px 0 4px}
+.role-option{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--line-strong);border-radius:8px;padding:10px 12px;cursor:pointer}
+.role-option:has(input:checked){border-color:var(--green-600);background:var(--green-50)}
+.role-option input{margin-top:3px;accent-color:var(--green-600)}
+.role-option strong{display:block;font-size:13.5px}
+.role-option span{font-size:12.5px;color:var(--ink-500)}
+@media (max-width:720px){.kv{grid-template-columns:1fr;gap:2px 0}.kv dd{margin-bottom:10px}.action-row{flex-direction:column;gap:10px}.who .em{display:none}}
 .content{padding:24px 28px 56px;max-width:1160px;width:100%}
 .lede{color:var(--ink-500);font-size:13.5px;margin:5px 0 0}
 
@@ -210,6 +236,10 @@ form[aria-busy="true"] input,form[aria-busy="true"] textarea,form[aria-busy="tru
   .nav{flex-direction:row;gap:4px}
   .content,.top{padding-left:16px;padding-right:16px}
   .grid2{grid-template-columns:1fr}
+  .top{gap:10px}
+  .top h1{font-size:17px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .top>div{flex-shrink:0;gap:8px!important}
+  .top .btn{white-space:nowrap}
 }
 `;
 
@@ -301,9 +331,13 @@ const PATHS = {
   lock: '<rect width="18" height="11" x="3" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
   landmark: '<path d="M3 22h18M6 18v-7m4 7v-7m4 7v-7m4 7v-7M12 2 3 7h18Z"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
+  users: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8"/>',
+  user: '<circle cx="12" cy="8" r="4"/><path d="M4 21v-1a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v1"/>',
+  key: '<circle cx="7.5" cy="15.5" r="4.5"/><path d="m10.7 12.3 9.8-9.8M17 6l3 3M14 9l2 2"/>',
+  copy: '<rect width="13" height="13" x="9" y="9" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
 } as const;
 
-type Nav = { href: string; label: string; icon: keyof typeof PATHS };
+type Nav = { href: string; label: string; icon: keyof typeof PATHS; administratorsOnly?: boolean };
 
 const NAV: Nav[] = [
   { href: '/admin', label: 'Overview', icon: 'gauge' },
@@ -313,12 +347,13 @@ const NAV: Nav[] = [
   { href: '/admin/facts', label: 'State facts', icon: 'book' },
   { href: '/admin/queries', label: 'Questions', icon: 'message' },
   { href: '/admin/audit', label: 'Audit log', icon: 'shield' },
+  { href: '/admin/users', label: 'Users', icon: 'users', administratorsOnly: true },
 ];
 
-export const Shell: FC<PropsWithChildren<{ title: string; path: string; email: string }>> = ({
+export const Shell: FC<PropsWithChildren<{ title: string; path: string; user: SessionUser }>> = ({
   title,
   path,
-  email,
+  user,
   children,
 }) => (
   <html lang="en">
@@ -344,7 +379,7 @@ export const Shell: FC<PropsWithChildren<{ title: string; path: string; email: s
             </div>
           </div>
           <nav class="nav">
-            {NAV.map((item) => (
+            {NAV.filter((item) => !item.administratorsOnly || user.role === 'administrator').map((item) => (
               <a
                 href={item.href}
                 aria-current={
@@ -367,7 +402,11 @@ export const Shell: FC<PropsWithChildren<{ title: string; path: string; email: s
           <header class="top">
             <h1>{title}</h1>
             <div style="display:flex;align-items:center;gap:14px">
-              <span class="top-meta">{email}</span>
+              <a class="who" href="/admin/account" aria-current={path === '/admin/account' ? 'page' : undefined} title="Your account">
+                <Icon name="user" />
+                <span class="em">{user.fullName ?? user.email}</span>
+                <span class="role">{ROLE_LABELS[asRole(user.role) ?? 'viewer']}</span>
+              </a>
               <form method="post" action="/admin/logout" style="margin:0">
                 <button class="btn" type="submit">
                   <Icon name="exit" />
@@ -459,6 +498,62 @@ export const LoginPage: FC<{ error?: string | undefined; notice?: string | undef
     </p>
   </AuthCard>
 );
+
+/**
+ * Shown when a signed-in person reaches something their role does not
+ * allow. Says what their role is and who can help, rather than a bare
+ * error: in an office, the next step is asking a colleague.
+ */
+export const Forbidden: FC<{ user: SessionUser }> = ({ user }) => {
+  const role = asRole(user.role);
+  return (
+    <Shell title="Not available to your role" path="" user={user}>
+      <div class="panel" style="max-width:620px">
+        <div class="form-body">
+          <h2 style="margin:0 0 8px;font-size:16px">Your role does not allow this</h2>
+          <p class="lede" style="margin:0 0 14px">
+            You are signed in as {role ? withArticle(role) : 'an account with no role'}.{' '}
+            {role === 'viewer'
+              ? 'Viewers can see everything in the dashboard but cannot change it.'
+              : 'Managing accounts is limited to administrators.'}{' '}
+            If you need this, ask one of your administrators to change your role.
+          </p>
+          <a class="btn" href="/admin">
+            <Icon name="back" /> Back to the overview
+          </a>
+        </div>
+      </div>
+    </Shell>
+  );
+};
+
+/** Audit actions in plain words, used wherever the record is shown. */
+const ACTIONS: Record<string, { cls: string; label: string }> = {
+  create: { cls: 'ok', label: 'Created' },
+  update: { cls: 'muted', label: 'Updated' },
+  login: { cls: 'ok', label: 'Signed in' },
+  logout: { cls: 'muted', label: 'Signed out' },
+  login_failed: { cls: 'bad', label: 'Sign-in failed' },
+  twofa_enabled: { cls: 'ok', label: '2FA set up' },
+  twofa_failed: { cls: 'warn', label: 'Wrong code' },
+  twofa_locked: { cls: 'bad', label: 'Locked out' },
+  twofa_reset: { cls: 'warn', label: '2FA reset' },
+  recovery_code_used: { cls: 'warn', label: 'Recovery code' },
+  recovery_codes_replaced: { cls: 'muted', label: 'New recovery codes' },
+  user_invited: { cls: 'ok', label: 'Invited' },
+  invite_revoked: { cls: 'muted', label: 'Invite withdrawn' },
+  user_joined: { cls: 'ok', label: 'Joined' },
+  role_changed: { cls: 'warn', label: 'Role changed' },
+  user_deactivated: { cls: 'bad', label: 'Deactivated' },
+  user_reactivated: { cls: 'ok', label: 'Reactivated' },
+  sessions_ended: { cls: 'muted', label: 'Signed out remotely' },
+  password_changed: { cls: 'warn', label: 'Password changed' },
+};
+
+export const ActionBadge = ({ action }: { action: string }) => {
+  const v = ACTIONS[action] ?? { cls: 'muted', label: action };
+  return <span class={`badge ${v.cls}`}>{v.label}</span>;
+};
 
 /** Confidence rendered consistently everywhere it appears. */
 export const ConfidenceBadge: FC<{ value: string | null }> = ({ value }) => {
