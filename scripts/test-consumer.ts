@@ -205,7 +205,8 @@ let forgotten = 0;
 let acked = 0;
 const failingEnv = {
   ...(env as object),
-  DATABASE_URL: 'postgresql://u:p@db.invalid/neondb',
+  // No credentials, not even fake ones: the CI secrets check rightly refuses anything shaped like a password in a URL.
+  DATABASE_URL: 'postgresql://user@db.invalid/neondb',
   CONVERSATION: {
     idFromName: (n: string) => n,
     get: () => ({
