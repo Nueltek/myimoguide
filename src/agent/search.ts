@@ -1,5 +1,6 @@
 import { generateText } from 'ai';
 import { conversationContext } from './context';
+import { orderSources, stripInlineLinks } from './citations';
 import type { Env } from '../types';
 import { synthesisModel, synthesisSettings, webSearchTool } from './models';
 
@@ -93,18 +94,17 @@ export async function searchWeb(
         url: s.url,
       }));
 
-    // Dedupe by URL — the same page is often cited several times.
-    const seen = new Set<string>();
-    const unique = sources.filter((s) => (seen.has(s.url) ? false : (seen.add(s.url), true)));
-
-    const text = result.text.trim();
+    // Inline Markdown links out of the text (WhatsApp shows them raw);
+    // the pages the answer actually cited first in the list.
+    const { text, cited } = stripInlineLinks(result.text);
+    const listed = orderSources(sources, cited);
 
     return {
       text,
-      sources: unique.slice(0, 4),
+      sources: listed,
       // No citations means nothing was actually read, whatever the model
       // wrote. Treat that as a miss rather than passing off unsourced prose.
-      found: text.length > 0 && unique.length > 0,
+      found: text.length > 0 && listed.length > 0,
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

@@ -126,9 +126,11 @@ const routeSchema = z.object({
   sensitivity: z
     .enum(['routine', 'payment_details', 'emergency'])
     .describe(
-      'payment_details = asking for a bank account, payment reference or where to send money. ' +
+      'payment_details = asking for a bank account number, account name, payment reference (RRR) or the details ' +
+      'to transfer money to. Asking WHERE to pay, WHICH office takes payment, or HOW to pay (in person, at a bank, ' +
+      'online) is routine, not payment_details. ' +
       'emergency = an urgent medical, fire or security situation happening now. ' +
-      'routine = everything else, including asking what a fee costs.',
+      'routine = everything else, including asking what a fee costs and where or how to pay it.',
     ),
 });
 
@@ -284,9 +286,10 @@ export async function answerQuestion(input: AnswerInput): Promise<AnswerResult> 
   //
   // Emergencies: an unchecked number that rings out is the single failure
   // here that cannot be undone with an apology.
-  if (route.sensitivity === 'payment_details' || route.sensitivity === 'emergency') {
+  const sensitivity = effectiveSensitivity(route.sensitivity, question);
+  if (sensitivity === 'payment_details' || sensitivity === 'emergency') {
     return {
-      text: renderNeedsOfficial(route.sensitivity, catalogue),
+      text: renderNeedsOfficial(sensitivity, catalogue),
       resolved: false,
       tier: 'withheld',
       ...routed,
@@ -392,6 +395,8 @@ export async function routeQuestion(
       '- Pick kind="none" for anything else. A question with no catalogue match is still a real question — mark it "none" and it will be searched on the web, so do not force a bad match.',
       '- Federal matters (NIN, passport, JAMB, CAC) are out of scope: kind="none".',
       '- Set sensitivity carefully. It decides whether an unverified answer is allowed at all.',
+      '  "Where can I pay my tax?" and "How do I pay?" are routine. Only a request for the account or reference',
+      '  itself — "what account do I pay into?", "send me the account number" — is payment_details.',
       '- Set confidence="low" if you are guessing between two services or the question is too vague.',
       '- Only set lga when the user named a place that maps to one.',
     ].join('\n'),
@@ -433,6 +438,36 @@ export async function decideRoute(...args: Parameters<typeof routeQuestion>): Pr
   }
 }
 
+const EMERGENCY = /\b(emergenc|ambulance|fire\b|accident|bleeding|robber|kidnap|attack|unconscious|dying|gunshot|help me now)/;
+
+/** Words that ask for the payment details themselves: an account, a reference, where to send money. */
+const PAYMENT_DETAILS =
+  /\b(account (number|no|name|details)|acct|bank (details|account)|which account|what account|pay (in)?to|transfer (to|into)|send (the )?money|payment (reference|details|info)|rrr\b|remita)/;
+
+/** Words that ask where or how to pay — a place or a method, not an account. */
+const PLACE_OR_METHOD = /\b(where|which office|what office|location|address|office|how (do|can|should|will) i pay|how to pay|how i go pay|wey i fit)\b/;
+
+/**
+ * The sensitivity that is acted on.
+ *
+ * "Where can I pay my tax?" was once withheld as if it asked for an
+ * account number — the routing model read "where to pay" as "where to
+ * send money". A resident asking for the office was told nothing, and had
+ * to explain they were not asking for account details.
+ *
+ * So a payment_details flag is overridden only when the question plainly
+ * asks for a place or a method AND names no account, reference or
+ * transfer. Anything else keeps the model's flag: a vague follow-up such
+ * as "and that one?" stays withheld. Erring towards withholding is the
+ * point; this only removes the one misreading seen in practice. The web
+ * answer's own rules still forbid repeating an account number from a page.
+ */
+export function effectiveSensitivity(flagged: Route['sensitivity'], question: string): Route['sensitivity'] {
+  if (flagged !== 'payment_details') return flagged;
+  const q = question.toLowerCase();
+  return PLACE_OR_METHOD.test(q) && !PAYMENT_DETAILS.test(q) ? 'routine' : 'payment_details';
+}
+
 /**
  * The route used when the model gave none. Conservative by design: the
  * safeguards that depend on routing — never repeating payment details or
@@ -441,12 +476,11 @@ export async function decideRoute(...args: Parameters<typeof routeQuestion>): Pr
  */
 export function fallbackRoute(question: string): Route {
   const q = question.toLowerCase();
-  const sensitivity: Route['sensitivity'] =
-    /\b(emergenc|ambulance|fire\b|accident|bleeding|robber|kidnap|attack|unconscious|dying|gunshot|help me now)/.test(q)
-      ? 'emergency'
-      : /\b(account (number|no|name|details)|acct|bank (details|account)|which account|pay (in)?to|transfer (to|into)|send (the )?money|payment reference|rrr\b|remita)/.test(q)
-        ? 'payment_details'
-        : 'routine';
+  const sensitivity: Route['sensitivity'] = EMERGENCY.test(q)
+    ? 'emergency'
+    : PAYMENT_DETAILS.test(q)
+      ? 'payment_details'
+      : 'routine';
   const greeting = /^(hi|hello|hey|good (morning|afternoon|evening)|thanks?( you)?|ok(ay)?)\b[\s!.,]*$/.test(q.trim());
   return {
     kind: greeting ? 'greeting' : 'none',

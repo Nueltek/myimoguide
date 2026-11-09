@@ -108,3 +108,45 @@ No migration in this fix.
 If anything fails, Cloudflare → myimoguide → Observability, with the
 time range covering the failure (not the default *Last 1 hour*). Search
 `consumer failed` or `routing:` and send me the entry.
+
+---
+
+## Follow-up: three bugs seen in the 8 Nov test screenshots
+
+1. **"Where can I pay my tax?" could be refused as if it asked for an
+   account number.** The routing instructions described a payment-details
+   request as asking "where to send money", and the model read "where to
+   pay" the same way. Two changes:
+   - The instructions now say plainly that asking where, at which office
+     or how to pay is a normal question. Only a request for the account or
+     the reference itself is withheld.
+   - A check that does not depend on the model
+     (`effectiveSensitivity` in `src/agent/answer.ts`) answers a question
+     that asks for a place or a method and names no account, reference or
+     transfer, even if the model flags it. Anything vaguer stays withheld.
+2. **Raw link code in web answers**, such as
+   `([imshiaonline.com](https://...))`. OpenAI writes citations into its
+   answer as web-page links, which WhatsApp cannot display. They are now
+   removed from the text; the sources are listed underneath.
+3. **The page the answer quoted could be missing from the sources.** The
+   list was simply the first four pages the search returned. Now the pages
+   the answer actually cited come first, OpenAI's `utm_source` tracking is
+   removed from the addresses, and each source is one line.
+   - Only addresses the provider reported as sources are listed. A link
+     that appears only in the model's own text is not, because nothing
+     shows it was read.
+
+`npm run test:routing` now has 38 checks. They include the exact answer
+from the screenshot, and the whole answer path run end to end with a fake
+OpenAI that routes the question and then answers it from the web.
+
+### Verify on your phone
+
+- [ ] *"Where can I pay my tax in Imo State?"* (typed, then as a voice
+      note): you get offices or steps, never "I won't pass on payment
+      details…"
+- [ ] *"Which account do I pay my tax into?"*: still refused, pointing to
+      the official office
+- [ ] A question that goes to the web (*"Which hospital dey around
+      Okigwe?"*): no `[...](...)` text in the answer, and the sources are
+      one clean line each

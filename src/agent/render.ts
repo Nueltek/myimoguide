@@ -1,4 +1,5 @@
 import type { Agency, Facility, Service, StateFact } from '../db/schema';
+import { sourceLine } from './citations';
 
 /**
  * Answer rendering. Pure functions over database rows — no model involved.
@@ -237,7 +238,7 @@ export function renderSourced(
 
   if (sources.length > 0) {
     lines.push('', '*Sources*');
-    for (const s of sources) lines.push(`• ${s.title}\n${s.url}`);
+    for (const s of sources) lines.push(sourceLine(s));
   }
 
   lines.push('', '_Please confirm with the office before you travel or pay anything._');
