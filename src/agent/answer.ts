@@ -1,4 +1,4 @@
-import { generateObject } from 'ai';
+import { NoObjectGeneratedError, generateObject } from 'ai';
 import { conversationContext } from './context';
 import { and, eq, isNotNull } from 'drizzle-orm';
 import { z } from 'zod';
@@ -19,9 +19,11 @@ import {
 import { searchWeb } from './search';
 import {
   type ModelProvider,
+  providerAccountProblem,
   providerOf,
   routingModel,
   routingModelId,
+  routingSettings,
   synthesisModelId,
 } from './models';
 
@@ -180,7 +182,7 @@ export async function answerQuestion(input: AnswerInput): Promise<AnswerResult> 
       .where(and(eq(agencies.isPublished, true), isNotNull(agencies.slug))),
   ]);
 
-  const route = await routeQuestion(env, question, history, catalogue, facts, agencyList);
+  const route = await decideRoute(env, question, history, catalogue, facts, agencyList);
 
   // A greeting is the first thing almost everyone sends. Answering it with
   // "I don't have a confirmed answer" is the worst possible opening, so
@@ -321,7 +323,7 @@ function isFederal(question: string): boolean {
   );
 }
 
-async function routeQuestion(
+export async function routeQuestion(
   env: Env,
   question: string,
   history: Array<{ role: 'user' | 'assistant'; text: string }>,
@@ -394,9 +396,66 @@ async function routeQuestion(
       '- Only set lga when the user named a place that maps to one.',
     ].join('\n'),
     prompt: context ? `${context}\n\nUser: ${question}` : question,
-    maxOutputTokens: 200,
-    temperature: 0,
+    ...routingSettings(env),
   });
 
   return object;
+}
+
+export type Route = z.infer<typeof routeSchema>;
+
+/**
+ * Routing, with a way out. If the model returns nothing usable — an empty
+ * or malformed response, which a reasoning model can produce with a 200
+ * status — the question is still answered: it goes to the cited web
+ * search, as an unmatched question would. One bad routing call must
+ * never cost a resident their answer, and must never be retried into the
+ * same failure.
+ *
+ * Only that case falls back. An account problem (no credit, bad key) is
+ * re-thrown so the consumer can say so honestly; a network failure is
+ * re-thrown so the queue retries it.
+ */
+export async function decideRoute(...args: Parameters<typeof routeQuestion>): Promise<Route> {
+  const [env, question] = args;
+  try {
+    return await routeQuestion(...args);
+  } catch (err) {
+    if (providerAccountProblem(err) || !NoObjectGeneratedError.isInstance(err)) throw err;
+    console.warn('routing: no usable decision from the model; falling back to web search', {
+      provider: providerOf(env),
+      model: routingModelId(env),
+      finishReason: err.finishReason,
+      usage: err.usage,
+      text: err.text?.slice(0, 200),
+    });
+    return fallbackRoute(question);
+  }
+}
+
+/**
+ * The route used when the model gave none. Conservative by design: the
+ * safeguards that depend on routing — never repeating payment details or
+ * emergency numbers from the web — are decided here by plain keyword
+ * checks instead, erring towards withholding.
+ */
+export function fallbackRoute(question: string): Route {
+  const q = question.toLowerCase();
+  const sensitivity: Route['sensitivity'] =
+    /\b(emergenc|ambulance|fire\b|accident|bleeding|robber|kidnap|attack|unconscious|dying|gunshot|help me now)/.test(q)
+      ? 'emergency'
+      : /\b(account (number|no|name|details)|acct|bank (details|account)|which account|pay (in)?to|transfer (to|into)|send (the )?money|payment reference|rrr\b|remita)/.test(q)
+        ? 'payment_details'
+        : 'routine';
+  const greeting = /^(hi|hello|hey|good (morning|afternoon|evening)|thanks?( you)?|ok(ay)?)\b[\s!.,]*$/.test(q.trim());
+  return {
+    kind: greeting ? 'greeting' : 'none',
+    serviceSlug: null,
+    factSlug: null,
+    agencySlug: null,
+    facilityType: null,
+    lga: null,
+    confidence: 'low',
+    sensitivity,
+  };
 }

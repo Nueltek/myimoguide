@@ -24,7 +24,8 @@
     "test:totp": "tsx scripts/test-totp.ts",
     "test:voice": "tsx scripts/test-voice.ts",
     "test:consumer": "tsx scripts/test-consumer.ts",
-    "test": "npm run test:dedupe && npm run test:totp && npm run test:voice && npm run test:consumer && npm run test:e2e"
+    "test:routing": "tsx scripts/test-routing.ts",
+    "test": "npm run test:dedupe && npm run test:totp && npm run test:voice && npm run test:consumer && npm run test:routing && npm run test:e2e"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.97",

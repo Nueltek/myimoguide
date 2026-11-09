@@ -1,6 +1,6 @@
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { createOpenAI } from '@ai-sdk/openai';
-import type { LanguageModel, Tool } from 'ai';
+import type { LanguageModel, Tool, generateText } from 'ai';
 import type { Env } from '../types';
 
 /**
@@ -65,6 +65,39 @@ function client(env: Env) {
   return providerOf(env) === 'openai'
     ? createOpenAI({ apiKey: env.OPENAI_API_KEY })
     : createAnthropic({ apiKey: env.ANTHROPIC_API_KEY });
+}
+
+/**
+ * Per-call settings, by provider.
+ *
+ * Learned the hard way. Anthropic's models here answer directly, so the
+ * output limit only has to fit the answer. OpenAI's gpt-6 models are
+ * reasoning models — "medium" reasoning by default — and OpenAI counts
+ * that hidden reasoning against the same output limit. Routing was capped
+ * at 200 tokens: fine for Haiku, and fine for gpt-6-luna on a short
+ * conversation. Once a long answer sat in the history, the model reasoned
+ * past 200 tokens before writing its decision, returned nothing with a
+ * success status, and every later message from that user failed with
+ * "No object generated: the model did not return a response".
+ *
+ * So for OpenAI: reasoning turned down to "low" (routing is a simple
+ * classification; web answers summarise what was read), and limits large
+ * enough to hold reasoning plus answer. Output is billed as used, not as
+ * allowed, so a higher ceiling costs nothing on its own. Temperature is
+ * left out for reasoning models, which do not accept it.
+ */
+type CallSettings = Pick<Parameters<typeof generateText>[0], 'maxOutputTokens' | 'temperature' | 'providerOptions'>;
+
+export function routingSettings(env: Env): CallSettings {
+  return providerOf(env) === 'openai'
+    ? { maxOutputTokens: 2_000, providerOptions: { openai: { reasoningEffort: 'low' } } }
+    : { maxOutputTokens: 300, temperature: 0 };
+}
+
+export function synthesisSettings(env: Env): CallSettings {
+  return providerOf(env) === 'openai'
+    ? { maxOutputTokens: 4_000, providerOptions: { openai: { reasoningEffort: 'low' } } }
+    : { maxOutputTokens: 700, temperature: 0 };
 }
 
 /** Cheap, deterministic classification. Runs on every message. */

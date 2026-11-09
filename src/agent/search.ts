@@ -1,7 +1,7 @@
 import { generateText } from 'ai';
 import { conversationContext } from './context';
 import type { Env } from '../types';
-import { synthesisModel, webSearchTool } from './models';
+import { synthesisModel, synthesisSettings, webSearchTool } from './models';
 
 /**
  * Tier 2: answer from the live web, with every claim attributed.
@@ -79,8 +79,7 @@ export async function searchWeb(
         'Three short paragraphs at most. Do not list the source URLs yourself — they are added separately.',
       ].join('\n'),
       prompt: context ? `${context}\n\nUser: ${question}` : question,
-      maxOutputTokens: 700,
-      temperature: 0,
+      ...synthesisSettings(env),
       // Must finish inside the consumer's ANSWER_BUDGET_MS, which in turn
       // sits inside WhatsApp's ~25s typing indicator. A search allowed to
       // outlast the indicator leaves the user staring at nothing.
