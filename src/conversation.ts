@@ -109,6 +109,15 @@ export class Conversation extends DurableObject<Env> {
       .reverse();
   }
 
+  /**
+   * Forgets the conversation so far. Used when a message has failed on
+   * every attempt: whatever caused it, a user must never be stuck because
+   * something in their own history keeps breaking every later message.
+   */
+  async forget(): Promise<void> {
+    this.sql.exec('DELETE FROM turns');
+  }
+
   async append(role: Turn['role'], text: string): Promise<void> {
     this.sql.exec('INSERT INTO turns (role, text, at) VALUES (?, ?, ?)', role, text, Date.now());
     // Keep only the last 20 turns — context beyond that is noise and tokens.

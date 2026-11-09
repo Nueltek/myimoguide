@@ -116,3 +116,37 @@ export function activeConfig(env: Env) {
     keyPresent: provider === 'openai' ? Boolean(env.OPENAI_API_KEY) : Boolean(env.ANTHROPIC_API_KEY),
   };
 }
+
+/**
+ * Is this error the provider refusing our account — no credit left, a
+ * revoked key — rather than a one-off failure?
+ *
+ * The difference decides what happens next. A one-off failure is worth
+ * the queue's retries. An account problem fails identically every time,
+ * so retrying only triples the wait and ends in a vague apology, while
+ * the real cause sits unseen in the logs. Instead it is answered at once,
+ * honestly, and logged in a line nobody can miss.
+ *
+ * Looks through the wrappers the AI SDK puts around provider errors
+ * (RetryError.lastError, cause), and matches on what Anthropic and OpenAI
+ * actually return.
+ */
+export function providerAccountProblem(err: unknown): string | null {
+  const seen = new Set<unknown>();
+  const queue: unknown[] = [err];
+  while (queue.length) {
+    const e = queue.shift();
+    if (!e || typeof e !== 'object' || seen.has(e)) continue;
+    seen.add(e);
+    const x = e as { statusCode?: number; responseBody?: string; message?: string; lastError?: unknown; cause?: unknown; errors?: unknown[] };
+    const text = `${x.responseBody ?? ''} ${x.message ?? ''}`;
+    if (/credit balance is too low|insufficient_quota|exceeded your current quota|billing/i.test(text)) {
+      return `the model provider reports no credit or quota left (${x.statusCode ?? 'no status'}): ${text.trim().slice(0, 200)}`;
+    }
+    if (x.statusCode === 401 || x.statusCode === 403 || /invalid x-api-key|incorrect api key|invalid_api_key|authentication_error|permission_error/i.test(text)) {
+      return `the model provider rejected the API key (${x.statusCode ?? 'no status'}): ${text.trim().slice(0, 200)}`;
+    }
+    queue.push(x.lastError, x.cause, ...(Array.isArray(x.errors) ? x.errors : []));
+  }
+  return null;
+}

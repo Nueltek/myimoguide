@@ -1,4 +1,5 @@
 import { generateObject } from 'ai';
+import { conversationContext } from './context';
 import { and, eq, isNotNull } from 'drizzle-orm';
 import { z } from 'zod';
 import type { Env } from '../types';
@@ -351,10 +352,7 @@ async function routeQuestion(
     )
     .join('\n');
 
-  const context = history
-    .slice(-4)
-    .map((t) => `${t.role === 'user' ? 'User' : 'Assistant'}: ${t.text}`)
-    .join('\n');
+  const context = conversationContext(history);
 
   const { object } = await generateObject({
     // Routing is a small classification job; the cheapest adequate model

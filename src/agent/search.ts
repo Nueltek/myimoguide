@@ -1,4 +1,5 @@
 import { generateText } from 'ai';
+import { conversationContext } from './context';
 import type { Env } from '../types';
 import { synthesisModel, webSearchTool } from './models';
 
@@ -54,10 +55,7 @@ export async function searchWeb(
   question: string,
   history: Array<{ role: 'user' | 'assistant'; text: string }>,
 ): Promise<SearchResult> {
-  const context = history
-    .slice(-4)
-    .map((t) => `${t.role === 'user' ? 'User' : 'Assistant'}: ${t.text}`)
-    .join('\n');
+  const context = conversationContext(history);
 
   try {
     const result = await generateText({

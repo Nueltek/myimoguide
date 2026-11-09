@@ -2,7 +2,7 @@ import type { Env, InboundJob } from '../types';
 import { createDb } from '../db/client';
 import { markRead, sendText } from '../whatsapp/client';
 import { answerQuestion } from '../agent/answer';
-import { activeConfig } from '../agent/models';
+import { activeConfig, providerAccountProblem, providerOf, routingModelId } from '../agent/models';
 import { transcriberFor } from '../voice/transcribe';
 import { UNHEARD_LABELS, UNHEARD_REPLIES, echoLine, hearVoiceNote, type Hearing } from '../voice/hear';
 
@@ -38,6 +38,10 @@ const MAX_ATTEMPTS = 3;
  */
 const ANSWER_BUDGET_MS = 22_000;
 
+/** When the answering provider refuses our account. Honest, without telling the public about our billing. */
+export const PROVIDER_DOWN_REPLY =
+  'I cannot answer questions at the moment because of a problem on our side, not with your question.\n\nPlease try again later.';
+
 export async function handleBatch(
   batch: MessageBatch<InboundJob>,
   env: Env,
@@ -62,6 +66,15 @@ export async function handleBatch(
       // which multiplies the load that caused the failure. On the last
       // attempt, say so and stop.
       if (message.attempts >= MAX_ATTEMPTS) {
+        // Whatever failed, do not let it fail the same way forever. If
+        // something in this user's saved conversation is what breaks the
+        // pipeline, every later message would hit it too, and failed
+        // messages never age it out. Forgetting costs one follow-up's
+        // worth of context; not forgetting can cost the user the service.
+        await env.CONVERSATION.get(env.CONVERSATION.idFromName(message.body.from))
+          .forget()
+          .then(() => console.warn('consumer: conversation history cleared after repeated failure', { messageId: message.body.messageId }))
+          .catch(() => undefined);
         await sendText(
           env,
           message.body.from,
@@ -217,10 +230,23 @@ export async function respond(
   // One budget for the whole pipeline: time spent transcribing comes out
   // of the time left to answer, so the reply still lands while the typing
   // indicator is showing.
-  const result = await withBudget(
-    deps.answer({ db, env, question: job.text, history }),
-    Math.max(5_000, ANSWER_BUDGET_MS - (Date.now() - started)),
-  );
+  let result: Awaited<ReturnType<typeof answerQuestion>> | null;
+  try {
+    result = await withBudget(
+      deps.answer({ db, env, question: job.text, history }),
+      Math.max(5_000, ANSWER_BUDGET_MS - (Date.now() - started)),
+    );
+  } catch (err) {
+    const problem = providerAccountProblem(err);
+    if (!problem) throw err;
+    // Retrying cannot fix an account problem. Say so now, and make the
+    // cause impossible to miss in the logs.
+    console.error(`PROVIDER UNAVAILABLE: ${problem}`, { provider: providerOf(env), messageId: job.messageId });
+    await sendText(env, job.from, PROVIDER_DOWN_REPLY);
+    await logFailure(db, env, job, problem, Date.now() - started, voice);
+    stage('provider-unavailable');
+    return;
+  }
   stage(result ? `answered:${result.tier}` : 'budget-exceeded');
 
   if (!result) {
@@ -387,4 +413,33 @@ async function logUnheard(
       latencyMs,
     })
     .onConflictDoNothing();
+}
+
+/** A question we could not answer because the provider refused us. Logged, so it shows in the dashboard as an error. */
+async function logFailure(
+  db: ReturnType<typeof createDb>,
+  env: Env,
+  job: InboundJob,
+  problem: string,
+  latencyMs: number,
+  voice: Extract<Hearing, { ok: true }> | null,
+): Promise<void> {
+  const { queries } = await import('../db/schema');
+  await db
+    .insert(queries)
+    .values({
+      userHash: await hashUser(job.from, env.WHATSAPP_APP_SECRET),
+      messageId: job.messageId,
+      question: job.text,
+      wasVoice: job.kind === 'audio',
+      audioSeconds: voice?.seconds ?? null,
+      wasResolved: false,
+      answerTier: 'error',
+      provider: providerOf(env),
+      model: routingModelId(env).slice(0, 64),
+      answer: `${PROVIDER_DOWN_REPLY}\n\n[${problem.slice(0, 300)}]`,
+      latencyMs,
+    })
+    .onConflictDoNothing()
+    .catch((err) => console.error('consumer: could not log the failure', err));
 }
